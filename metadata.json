@@ -1,0 +1,8 @@
+{
+  "name": "BotCraft AI - No-Code Chatbot Builder",
+  "description": "A professional SaaS platform to build, train, and deploy custom AI chatbots using your own data. Features include RAG-based AI logic, full UI customization, and an easy embed script.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
