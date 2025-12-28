@@ -9,11 +9,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@google/genai": "latest",
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.23.26",
+    "lucide-react": "latest",
     "react": "18.2.0",
     "react-dom": "18.2.0",
-    "@google/genai": "latest",
-    "lucide-react": "latest",
-    "recharts": "latest"
+    "react-router-dom": "^7.11.0",
+    "recharts": "latest",
+    "tailwind-merge": "^3.4.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
