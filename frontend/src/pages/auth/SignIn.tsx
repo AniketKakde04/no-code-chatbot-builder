@@ -2,19 +2,35 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, Loader2, ArrowRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { supabase } from '@/lib/supabase';
 
 export const SignIn = () => {
     const navigate = useNavigate();
     const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setIsLoading(true);
-        // Simulate API call
-        setTimeout(() => {
-            setIsLoading(false);
+        setError(null);
+
+        const email = (e.currentTarget.elements.namedItem('email') as HTMLInputElement).value;
+        const password = (e.currentTarget.elements.namedItem('password') as HTMLInputElement).value;
+
+
+        try {
+            const { error } = await supabase.auth.signInWithPassword({
+                email,
+                password,
+            });
+
+            if (error) throw error;
             navigate('/dashboard');
-        }, 1500);
+        } catch (err: any) {
+            setError(err.message);
+        } finally {
+            setIsLoading(false);
+        }
     };
 
     return (
@@ -31,6 +47,7 @@ export const SignIn = () => {
                         <Mail className="absolute left-3 top-2.5 h-5 w-5 text-slate-500" />
                         <input
                             id="email"
+                            name="email"
                             type="email"
                             placeholder="name@example.com"
                             className="flex h-10 w-full rounded-md border border-slate-800 bg-slate-900 px-3 pl-10 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
@@ -48,6 +65,7 @@ export const SignIn = () => {
                         <Lock className="absolute left-3 top-2.5 h-5 w-5 text-slate-500" />
                         <input
                             id="password"
+                            name="password"
                             type="password"
                             placeholder="••••••••"
                             className="flex h-10 w-full rounded-md border border-slate-800 bg-slate-900 px-3 pl-10 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
