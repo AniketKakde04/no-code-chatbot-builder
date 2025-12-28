@@ -1,9 +1,22 @@
 import React from 'react';
-import { Outlet, NavLink } from 'react-router-dom';
+import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { Bot, LayoutDashboard, Settings, LogOut, Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { supabase } from '@/lib/supabase';
 
 export const AppLayout = () => {
+    const navigate = useNavigate();
+
+    const handleSignOut = async () => {
+        try {
+            const { error } = await supabase.auth.signOut();
+            if (error) throw error;
+            navigate('/login');
+        } catch (error) {
+            console.error('Error signing out:', error);
+        }
+    };
+
     return (
         <div className="flex h-screen bg-slate-950 text-slate-50 overflow-hidden">
             {/* Sidebar */}
@@ -50,7 +63,10 @@ export const AppLayout = () => {
                 </nav>
 
                 <div className="p-4 border-t border-slate-800">
-                    <button className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-slate-400 hover:text-red-400 hover:bg-red-500/10 w-full transition-colors">
+                    <button
+                        onClick={handleSignOut}
+                        className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-slate-400 hover:text-red-400 hover:bg-red-500/10 w-full transition-colors"
+                    >
                         <LogOut className="w-4 h-4" />
                         Sign Out
                     </button>
