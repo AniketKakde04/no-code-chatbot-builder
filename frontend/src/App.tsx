@@ -5,6 +5,8 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { SignIn } from '@/pages/auth/SignIn';
 import { SignUp } from '@/pages/auth/SignUp';
 import { Dashboard } from '@/pages/dashboard/Dashboard';
+import { CreateBot } from '@/pages/dashboard/CreateBot';
+import { EmbedBot } from '@/pages/dashboard/EmbedBot';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 
 function App() {
@@ -25,6 +27,8 @@ function App() {
             </ProtectedRoute>
           }>
             <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/create-bot" element={<CreateBot />} />
+            <Route path="/embed/:botId" element={<EmbedBot />} />
           </Route>
 
           {/* Default Redirect */}

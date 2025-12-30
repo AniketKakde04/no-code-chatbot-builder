@@ -1,19 +1,40 @@
-import React from 'react';
-import { Plus, MessageSquare, BarChart3, ArrowUpRight, Bot } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Plus, MessageSquare, BarChart3, ArrowUpRight, Bot as BotIcon, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
+import { api, Bot } from '@/services/api';
+import { useAuth } from '@/contexts/AuthContext';
 
 export const Dashboard = () => {
-    // Mock data
-    const stats = [
-        { label: 'Active Agents', value: '3', change: '+1', icon: MessageSquare, color: 'text-blue-400' },
-        { label: 'Total Conversations', value: '1,234', change: '+12%', icon: BarChart3, color: 'text-purple-400' },
-    ];
+    const { session } = useAuth();
+    const [bots, setBots] = useState<Bot[]>([]);
+    const [stats, setStats] = useState({ total_bots: 0, total_messages: 0, total_conversations: 0 });
+    const [loading, setLoading] = useState(true);
 
-    const agents = [
-        { id: 1, name: 'Support Bot V1', status: 'Active', conversations: 450, lastActive: '2 min ago' },
-        { id: 2, name: 'Sales Associate', status: 'Training', conversations: 0, lastActive: '1 hr ago' },
-        { id: 3, name: 'Internal HR', status: 'Active', conversations: 120, lastActive: '5 hr ago' },
+    useEffect(() => {
+        if (session?.access_token) {
+            loadData();
+        }
+    }, [session]);
+
+    const loadData = async () => {
+        try {
+            const [botsData, statsData] = await Promise.all([
+                api.getBots(session!.access_token),
+                api.getStats(session!.access_token)
+            ]);
+            setBots(botsData);
+            setStats(statsData);
+        } catch (error) {
+            console.error(error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const statsCards = [
+        { label: 'Active Agents', value: stats.total_bots.toString(), change: '+0', icon: MessageSquare, color: 'text-blue-400' },
+        { label: 'Total Conversations', value: stats.total_conversations.toString(), change: '+0%', icon: BarChart3, color: 'text-purple-400' },
     ];
 
     return (
@@ -23,15 +44,15 @@ export const Dashboard = () => {
                     <h1 className="text-3xl font-bold text-white mb-2">Dashboard</h1>
                     <p className="text-slate-400">Manage your AI agents and view performance</p>
                 </div>
-                <button className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg font-medium transition-colors shadow-lg shadow-indigo-500/20">
+                <Link to="/create-bot" className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg font-medium transition-colors shadow-lg shadow-indigo-500/20">
                     <Plus className="w-4 h-4" />
                     Create New Agent
-                </button>
+                </Link>
             </div>
 
             {/* Stats Grid */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                {stats.map((stat, index) => (
+                {statsCards.map((stat, index) => (
                     <div key={index} className="p-6 rounded-xl bg-slate-900 border border-slate-800 backdrop-blur-sm">
                         <div className="flex items-center justify-between mb-4">
                             <div className={`p-2 rounded-lg bg-slate-950 border border-slate-800 ${stat.color}`}>
@@ -61,41 +82,57 @@ export const Dashboard = () => {
                             <tr>
                                 <th className="px-6 py-4">Agent Name</th>
                                 <th className="px-6 py-4">Status</th>
-                                <th className="px-6 py-4">Conversations</th>
-                                <th className="px-6 py-4">Last Active</th>
+                                <th className="px-6 py-4">Created At</th>
                                 <th className="px-6 py-4 text-right">Actions</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-800">
-                            {agents.map((agent) => (
-                                <tr key={agent.id} className="hover:bg-slate-900/80 transition-colors">
-                                    <td className="px-6 py-4">
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
-                                                <Bot className="w-4 h-4" />
-                                            </div>
-                                            <span className="font-medium text-slate-200">{agent.name}</span>
+                            {loading ? (
+                                <tr>
+                                    <td colSpan={4} className="px-6 py-8 text-center text-slate-400">
+                                        <div className="flex items-center justify-center gap-2">
+                                            <Loader2 className="w-4 h-4 animate-spin" /> Loading your agents...
                                         </div>
                                     </td>
-                                    <td className="px-6 py-4">
-                                        <span className={cn(
-                                            "inline-flex items-center px-2 py-1 rounded-full text-xs font-medium border",
-                                            agent.status === 'Active'
-                                                ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
-                                                : "bg-amber-500/10 text-amber-400 border-amber-500/20"
-                                        )}>
-                                            {agent.status}
-                                        </span>
-                                    </td>
-                                    <td className="px-6 py-4 text-slate-400">{agent.conversations}</td>
-                                    <td className="px-6 py-4 text-slate-400">{agent.lastActive}</td>
-                                    <td className="px-6 py-4 text-right">
-                                        <Link to={`/agent/${agent.id}`} className="text-sm font-medium text-indigo-400 hover:text-indigo-300 inline-flex items-center gap-1">
-                                            Manage <ArrowUpRight className="w-3 h-3" />
-                                        </Link>
+                                </tr>
+                            ) : bots.length === 0 ? (
+                                <tr>
+                                    <td colSpan={4} className="px-6 py-8 text-center text-slate-400">
+                                        No agents found. Create your first one above!
                                     </td>
                                 </tr>
-                            ))}
+                            ) : (
+                                bots.map((bot) => (
+                                    <tr key={bot.id} className="hover:bg-slate-900/80 transition-colors">
+                                        <td className="px-6 py-4">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
+                                                    <BotIcon className="w-4 h-4" />
+                                                </div>
+                                                <span className="font-medium text-slate-200">{bot.name}</span>
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <span className={cn(
+                                                "inline-flex items-center px-2 py-1 rounded-full text-xs font-medium border",
+                                                bot.status === 'Active'
+                                                    ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                                                    : "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                                            )}>
+                                                {bot.status}
+                                            </span>
+                                        </td>
+                                        <td className="px-6 py-4 text-slate-400">
+                                            {new Date(bot.created_at).toLocaleDateString()}
+                                        </td>
+                                        <td className="px-6 py-4 text-right">
+                                            <Link to={`/embed/${bot.id}`} className="text-sm font-medium text-indigo-400 hover:text-indigo-300 inline-flex items-center gap-1">
+                                                Embed <ArrowUpRight className="w-3 h-3" />
+                                            </Link>
+                                        </td>
+                                    </tr>
+                                ))
+                            )}
                         </tbody>
                     </table>
                 </div>

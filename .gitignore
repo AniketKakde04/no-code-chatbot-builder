@@ -1,0 +1,13 @@
+# Global Secrets
+.env
+.env.local
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
