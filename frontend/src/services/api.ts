@@ -75,6 +75,19 @@ export const api = {
         return response.json();
     },
 
+    deleteBot: async (botId: string, token: string) => {
+        const response = await fetch(`${API_URL}/bots/${botId}`, {
+            method: 'DELETE',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        if (!response.ok) {
+            throw new Error('Failed to delete bot');
+        }
+        return await response.json();
+    },
+
     /**
      * Sends a chat message to the backend RAG pipeline.
      */

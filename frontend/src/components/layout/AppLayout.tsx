@@ -1,5 +1,6 @@
 import React from 'react';
-import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import { Outlet, NavLink, useNavigate, Link } from 'react-router-dom';
+
 import { Bot, LayoutDashboard, Settings, LogOut, Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -30,8 +31,10 @@ export const AppLayout = () => {
 
                 <div className="px-4 mb-6">
                     <button className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-lg transition-colors font-medium shadow-sm shadow-indigo-500/20">
-                        <Plus className="w-4 h-4" />
-                        <span>New Agent</span>
+                        <Link to="/create-bot" className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg font-medium transition-colors shadow-lg shadow-indigo-500/20">
+                            <Plus className="w-4 h-4" />
+                            Create New Agent
+                        </Link>
                     </button>
                 </div>
 

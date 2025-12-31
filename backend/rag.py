@@ -105,3 +105,19 @@ def get_answer(bot_id: str, question: str, api_key: str):
         logger.error(f"Error getting answer: {e}")
         # Return the error as a string so the user sees it in the chat interface
         return f"I encountered an error retrieving the answer: {str(e)}"
+
+def delete_bot_data(bot_id: str):
+    """
+    Deletes the vector store collection for the bot.
+    """
+    try:
+        logger.info(f"Deleting vector data for bot: {bot_id}")
+        Chroma(
+            persist_directory=VECTOR_STORAGE_PATH,
+            collection_name=bot_id,
+            embedding_function=embeddings
+        ).delete_collection()
+        return True
+    except Exception as e:
+        logger.error(f"Error deleting bot data: {e}")
+        return False

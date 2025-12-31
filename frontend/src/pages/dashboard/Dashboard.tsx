@@ -1,15 +1,24 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, MessageSquare, BarChart3, ArrowUpRight, Bot as BotIcon, Loader2 } from 'lucide-react';
+import { Plus, MessageSquare, BarChart3, ArrowUpRight, Bot as BotIcon, Loader2, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { api, Bot } from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';
+
+import { Modal } from '@/components/ui/Modal';
+import { Toast, ToastType } from '@/components/ui/Toast';
 
 export const Dashboard = () => {
     const { session } = useAuth();
     const [bots, setBots] = useState<Bot[]>([]);
     const [stats, setStats] = useState({ total_bots: 0, total_messages: 0, total_conversations: 0 });
     const [loading, setLoading] = useState(true);
+
+    // UI State
+    const [deleteModal, setDeleteModal] = useState<{ isOpen: boolean; botId: string; botName: string; isLoading: boolean }>({
+        isOpen: false, botId: '', botName: '', isLoading: false
+    });
+    const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null);
 
     useEffect(() => {
         if (session?.access_token) {
@@ -29,6 +38,33 @@ export const Dashboard = () => {
             console.error(error);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const showToast = (message: string, type: ToastType) => {
+        setToast({ message, type });
+    };
+
+    const handleDeleteClick = (botId: string, botName: string) => {
+        setDeleteModal({ isOpen: true, botId, botName, isLoading: false });
+    };
+
+    const confirmDelete = async () => {
+        if (!deleteModal.botId) return;
+
+        setDeleteModal(prev => ({ ...prev, isLoading: true }));
+
+        try {
+            await api.deleteBot(deleteModal.botId, session!.access_token);
+
+            // Remove from local state
+            setBots(prev => prev.filter(b => b.id !== deleteModal.botId));
+            showToast('Bot deleted successfully', 'success');
+            setDeleteModal(prev => ({ ...prev, isOpen: false }));
+        } catch (error) {
+            console.error("Failed to delete bot:", error);
+            showToast('Failed to delete bot. Please try again.', 'error');
+            setDeleteModal(prev => ({ ...prev, isOpen: false })); // Close regardless on error? User might want to retry. Let's close for now.
         }
     };
 
@@ -126,9 +162,18 @@ export const Dashboard = () => {
                                             {new Date(bot.created_at).toLocaleDateString()}
                                         </td>
                                         <td className="px-6 py-4 text-right">
-                                            <Link to={`/embed/${bot.id}`} className="text-sm font-medium text-indigo-400 hover:text-indigo-300 inline-flex items-center gap-1">
-                                                Embed <ArrowUpRight className="w-3 h-3" />
-                                            </Link>
+                                            <div className="flex items-center justify-end gap-3">
+                                                <Link to={`/embed/${bot.id}`} className="text-sm font-medium text-indigo-400 hover:text-indigo-300 inline-flex items-center gap-1">
+                                                    Embed <ArrowUpRight className="w-3 h-3" />
+                                                </Link>
+                                                <button
+                                                    onClick={() => handleDeleteClick(bot.id, bot.name)}
+                                                    className="text-slate-400 hover:text-red-400 transition-colors p-1"
+                                                    title="Delete Bot"
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                            </div>
                                         </td>
                                     </tr>
                                 ))
@@ -137,6 +182,24 @@ export const Dashboard = () => {
                     </table>
                 </div>
             </div>
+            {/* UI Overlays */}
+            <Modal
+                isOpen={deleteModal.isOpen}
+                onClose={() => setDeleteModal(prev => ({ ...prev, isOpen: false }))}
+                onConfirm={confirmDelete}
+                title="Delete Agent"
+                message={`Are you sure you want to delete "${deleteModal.botName}"? This action cannot be undone and will remove all associated data and memory.`}
+                confirmText="Delete Agent"
+                type="danger"
+                isLoading={deleteModal.isLoading}
+            />
+            {toast && (
+                <Toast
+                    message={toast.message}
+                    type={toast.type}
+                    onClose={() => setToast(null)}
+                />
+            )}
         </div>
     );
 };

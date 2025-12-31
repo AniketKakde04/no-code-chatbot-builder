@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 import pathlib
 from supabase import create_client, Client, ClientOptions
-from rag import ingest_file, get_answer
+from rag import ingest_file, get_answer, delete_bot_data
 
 # Load .env explicitly to be safe
 env_path = pathlib.Path(__file__).parent / '.env'
@@ -198,6 +198,41 @@ async def get_stats(
     except Exception as e:
         print(f"Error fetching stats: {e}")
         return {"total_bots": 0, "total_messages": 0, "total_conversations": 0}
+
+@app.delete("/bots/{bot_id}")
+async def delete_bot(
+    bot_id: str,
+    user: dict = Depends(verify_user),
+    token: str = Depends(get_token)
+):
+    print(f"Deleting bot {bot_id} for user {user.user.id}")
+    
+    user_supabase = get_auth_client(token)
+    
+    # 1. Delete from Supabase
+    try:
+        # Use admin client if available to bypass potential missing DELETE RLS policies
+        # We still enforce user_id match to ensure security (users can only delete their own bots)
+        client = supabase_admin if supabase_admin else user_supabase
+        
+        response = client.table("bots").delete().eq("id", bot_id).eq("user_id", user.user.id).execute()
+        
+        # Check if anything was actually deleted
+        # Note: If RLS is missing and we use user_supabase, this might return empty data but no error
+        if not response.data:
+             print(f"Delete failed. Bot {bot_id} not found or RLS blocked delete.")
+             raise HTTPException(status_code=404, detail="Bot not found or unauthorized (Check RLS policies)")
+             
+    except Exception as e:
+        print(f"Database error deleting bot: {e}")
+        if "404" in str(e): raise e
+        raise HTTPException(status_code=500, detail=f"Failed to delete bot: {str(e)}")
+
+    # 2. Delete from Vector Store
+    # We proceed even if DB delete failed? No, only if DB delete succeeded.
+    delete_bot_data(bot_id)
+    
+    return {"status": "success", "bot_id": bot_id}
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
