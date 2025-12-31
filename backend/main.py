@@ -89,11 +89,15 @@ def health_check():
 @app.post("/ingest")
 async def ingest_document(
     name: str = Form(...),
-    file: UploadFile = File(...),
+    file: UploadFile = File(None),
+    url:str=Form(None),
     user: dict = Depends(verify_user),
     token: str = Depends(get_token)
 ):
     print(f"Ingesting for user: {user.user.id}")
+
+    if not file and not url:
+        raise HTTPException(status_code=400,detail="Must provide either a file or a URL")
     
     # Create authenticated client for RLS
     user_supabase = get_auth_client(token)
@@ -114,21 +118,45 @@ async def ingest_document(
         print(f"Database error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create bot record: {str(e)}")
 
-    # 2. Process file with the new UUID
-    file_location = f"temp_{file.filename}"
+    # 2. Process file or url
+
+    total_chunks = 0
+    errors = []
+
     try:
-        with open(file_location, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-    
-        success, result = ingest_file(file_location, bot_id)
-    
-        if success:
-            return {"status": "success", "chunks": result, "bot_id": bot_id}
+        # 1. Process File if present
+        if file:
+            file_location = f"temp_{file.filename}"
+            try:
+                with open(file_location, "wb") as buffer:
+                    shutil.copyfileobj(file.file, buffer)
+                
+                success, result = ingest_file(file_location, bot_id)
+                if success:
+                    total_chunks += result
+                else:
+                    errors.append(f"File Error: {result}")
+            finally:
+                if os.path.exists(file_location):
+                    os.remove(file_location)
+
+        # 2. Process URL if present
+        if url:
+             success, result = ingest_file(url, bot_id)
+             if success:
+                 total_chunks += result
+             else:
+                 errors.append(f"URL Error: {result}")
+
+        if total_chunks > 0:
+            return {"status": "success", "chunks": total_chunks, "bot_id": bot_id}
         else:
-            raise HTTPException(status_code=500, detail=result)
-    finally:
-        if os.path.exists(file_location):
-            os.remove(file_location)
+             # If both failed or nothing produced chunks
+             raise HTTPException(status_code=500, detail="; ".join(errors) or "No content ingested")
+    except Exception as e:
+        print(f"Error ingesting file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/bots")
 async def get_user_bots(

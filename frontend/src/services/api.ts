@@ -24,10 +24,17 @@ export const api = {
     /**
      * Uploads a PDF document to the backend for ingestion.
      */
-    ingestDocument: async (name: string, file: File, token: string): Promise<IngestResponse> => {
+    ingestDocument: async (name: string, file: File | null, token: string, url?: string): Promise<IngestResponse> => {
         const formData = new FormData();
         formData.append('name', name);
-        formData.append('file', file);
+
+        if (file) {
+            formData.append('file', file);
+        }
+
+        if (url) {
+            formData.append('url', url);
+        }
 
         const response = await fetch(`${API_URL}/ingest`, {
             method: 'POST',

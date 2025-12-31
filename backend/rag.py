@@ -8,6 +8,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_community.document_loaders import WebBaseLoader
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -25,7 +26,13 @@ def ingest_file(file_path: str, bot_id: str):
     """
     try:
         logger.info(f"Ingesting file: {file_path} for bot_id: {bot_id}")
-        loader = PyPDFLoader(file_path)
+
+        if file_path.startswith("https://") or file_path.startswith("http://"):
+            # Use Jina Reader to convert any URL (even SPAs) to Markdown text
+            loader = WebBaseLoader(f"https://r.jina.ai/{file_path}")
+        else:
+            loader = PyPDFLoader(file_path)
+        
         docs = loader.load()
         
         if not docs:
