@@ -5,15 +5,21 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "beautifulsoup4>=4.14.3",
+    "ddgs>=9.10.0",
+    "duckduckgo-search>=8.1.1",
     "fastapi",
     "langchain",
     "langchain-chroma",
+    "langchain-classic>=1.0.1",
     "langchain-community",
     "langchain-core",
     "langchain-google-genai",
     "langchain-huggingface",
+    "langgraph>=1.0.5",
     "pydantic",
     "python-dotenv",
+    "python-multipart>=0.0.21",
     "sentence-transformers",
     "supabase",
     "uvicorn",

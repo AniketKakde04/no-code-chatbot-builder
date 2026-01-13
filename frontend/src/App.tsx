@@ -7,6 +7,7 @@ import { SignUp } from '@/pages/auth/SignUp';
 import { Dashboard } from '@/pages/dashboard/Dashboard';
 import { CreateBot } from '@/pages/dashboard/CreateBot';
 import { EmbedBot } from '@/pages/dashboard/EmbedBot';
+import { AgentBuilder } from '@/pages/agent-builder/AgentBuilder';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 
 function App() {
@@ -29,6 +30,7 @@ function App() {
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/create-bot" element={<CreateBot />} />
             <Route path="/embed/:botId" element={<EmbedBot />} />
+            <Route path="/agent-builder" element={<AgentBuilder />} />
           </Route>
 
           {/* Default Redirect */}

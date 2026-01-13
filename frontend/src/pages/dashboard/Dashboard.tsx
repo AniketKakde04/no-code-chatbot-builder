@@ -109,6 +109,22 @@ export const Dashboard = () => {
                 </div>
             </div>
 
+            <div className="bg-gradient-to-r from-indigo-900/50 to-purple-900/50 rounded-xl p-6 border border-indigo-500/30 flex items-center justify-between">
+                <div>
+                    <h2 className="text-xl font-bold text-white mb-2">AI Agent Workflows</h2>
+                    <p className="text-slate-300 max-w-xl">
+                        Build complex multi-step agents (e.g. Internship Finders) with our drag-and-drop editor.
+                    </p>
+                </div>
+                <Link to="/agent-builder" className="flex items-center gap-2 bg-white text-indigo-900 px-6 py-3 rounded-lg font-bold hover:bg-indigo-50 transition-colors shadow-lg">
+                    <BotIcon className="w-5 h-5" />
+                    Launch Builder
+                </Link>
+            </div>
+
+
+
+
             {/* Agents List */}
             <div>
                 <h2 className="text-xl font-bold text-white mb-4">Your Agents</h2>
@@ -193,13 +209,15 @@ export const Dashboard = () => {
                 type="danger"
                 isLoading={deleteModal.isLoading}
             />
-            {toast && (
-                <Toast
-                    message={toast.message}
-                    type={toast.type}
-                    onClose={() => setToast(null)}
-                />
-            )}
-        </div>
+            {
+                toast && (
+                    <Toast
+                        message={toast.message}
+                        type={toast.type}
+                        onClose={() => setToast(null)}
+                    />
+                )
+            }
+        </div >
     );
 };

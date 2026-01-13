@@ -1,0 +1,1 @@
+﻿{"nodes": [{"id": "1", "type": "input"}, {"id": "2", "type": "llm", "data": {"label": "Say hello to"}}], "edges": [{"source": "1", "target": "2"}], "initial_input": "Tester"}

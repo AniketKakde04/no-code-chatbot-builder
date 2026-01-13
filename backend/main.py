@@ -5,6 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import pathlib
+from typing import List, Dict, Any
+from workflow_engine import build_and_run_workflow
 from supabase import create_client, Client, ClientOptions
 from rag import ingest_file, get_answer, delete_bot_data
 
@@ -47,6 +49,11 @@ except Exception as e:
     print(f"Error initializing Supabase: {e}")
     supabase = None
     supabase_admin = None
+
+class WorkflowRequest(BaseModel):
+    nodes: List[Dict]
+    edges: List[Dict]
+    initial_input: str
 
 class ChatRequest(BaseModel):
     bot_id: str
@@ -258,6 +265,24 @@ async def chat(request: ChatRequest):
         print(f"Error logging messages: {e}")
 
     return {"answer": answer}
+
+@app.post("/execute-workflow")
+async def execute_workflow(request: WorkflowRequest):
+    print(f"Executing Workflow with {len(request.nodes)} nodes")
+    try:
+        # Run the LangGraph Engine
+        result = build_and_run_workflow(request.nodes, request.edges, request.initial_input)
+        
+        # Return the final output
+        return {
+            "status": "success", 
+            "result": result.get('current_input', 'No output'), 
+            "full_state": result
+        }
+    except Exception as e:
+        print(f"Workflow execution failed: {e}")
+        # In a real app, we would return a proper error message
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
