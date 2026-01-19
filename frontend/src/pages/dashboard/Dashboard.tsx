@@ -189,6 +189,12 @@ export const Dashboard = () => {
                                                 >
                                                     <Trash2 className="w-4 h-4" />
                                                 </button>
+                                                <Link 
+  to={`/bot/${bot.id}/telegram`}
+  className="text-sm text-blue-400 hover:text-blue-300"
+>
+  Connect Telegram
+</Link>
                                             </div>
                                         </td>
                                     </tr>

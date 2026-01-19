@@ -9,7 +9,7 @@ import { CreateBot } from '@/pages/dashboard/CreateBot';
 import { EmbedBot } from '@/pages/dashboard/EmbedBot';
 import { AgentBuilder } from '@/pages/agent-builder/AgentBuilder';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
-
+import { TelegramIntegration } from '@/pages/dashboard/TelegramIntegration';
 function App() {
   return (
     <AuthProvider>
@@ -31,6 +31,7 @@ function App() {
             <Route path="/create-bot" element={<CreateBot />} />
             <Route path="/embed/:botId" element={<EmbedBot />} />
             <Route path="/agent-builder" element={<AgentBuilder />} />
+<Route path="/bot/:botId/telegram" element={<TelegramIntegration />} />
           </Route>
 
           {/* Default Redirect */}

@@ -1,14 +1,16 @@
 import os
 import shutil
-from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Depends,Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import pathlib
+import httpx
 from typing import List, Dict, Any
 from workflow_engine import build_and_run_workflow
 from supabase import create_client, Client, ClientOptions
 from rag import ingest_file, get_answer, delete_bot_data
+from threading import Thread
 
 # Load .env explicitly to be safe
 env_path = pathlib.Path(__file__).parent / '.env'
@@ -39,7 +41,15 @@ try:
         # Global client for generic operations
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     
+    service_key = os.getenv("SUPABASE_SERVICE_KEY")
     # Admin client for bypassing RLS (logging/analytics)
+    if service_key:
+        print(f"✅ Found Service Key: {service_key[:5]}...") # Prints first 5 chars
+        supabase_admin: Client = create_client(SUPABASE_URL, service_key)
+    else:
+        supabase_admin = None
+        print("❌ ERROR: SUPABASE_SERVICE_KEY is missing from .env or not loaded!")
+    # --- DEBUGGING BLOCK END ---
     if SUPABASE_URL and SUPABASE_SERVICE_KEY:
         supabase_admin: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
     else:
@@ -89,6 +99,24 @@ def get_auth_client(token: str) -> Client:
         options=ClientOptions(headers={"Authorization": f"Bearer {token}"})
     )
 
+def process_files_background(file_info: Dict[str, Any], bot_id: str, user_id: str):
+    """
+    Background task to process files without blocking the response.
+    """
+    try:
+        for file_location, file_type in file_info['files']:
+            try:
+                success, result = ingest_file(file_location, bot_id)
+                if not success:
+                    print(f"Error processing {file_type}: {result}")
+            finally:
+                if os.path.exists(file_location):
+                    os.remove(file_location)
+        
+        print(f"Background processing completed for bot_id: {bot_id}")
+    except Exception as e:
+        print(f"Error in background processing: {e}")
+
 @app.get("/")
 def health_check():
     return {"status": "running", "service": "BotCraft Backend"}
@@ -99,12 +127,13 @@ async def ingest_document(
     file: UploadFile = File(None),
     url:str=Form(None),
     user: dict = Depends(verify_user),
-    token: str = Depends(get_token)
+    token: str = Depends(get_token),
+    csvfile: UploadFile = File(None)
 ):
     print(f"Ingesting for user: {user.user.id}")
 
-    if not file and not url:
-        raise HTTPException(status_code=400,detail="Must provide either a file or a URL")
+    if not file and not url and not csvfile:
+        raise HTTPException(status_code=400,detail="Must provide at least one source (PDF, CSV, or URL)")
     
     # Create authenticated client for RLS
     user_supabase = get_auth_client(token)
@@ -125,43 +154,47 @@ async def ingest_document(
         print(f"Database error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create bot record: {str(e)}")
 
-    # 2. Process file or url
-
-    total_chunks = 0
-    errors = []
-
+    # 2. Save files temporarily and start background processing
+    files_to_process = []
+    
     try:
-        # 1. Process File if present
+        # 1. Save PDF file if present
         if file:
             file_location = f"temp_{file.filename}"
-            try:
-                with open(file_location, "wb") as buffer:
-                    shutil.copyfileobj(file.file, buffer)
-                
-                success, result = ingest_file(file_location, bot_id)
-                if success:
-                    total_chunks += result
-                else:
-                    errors.append(f"File Error: {result}")
-            finally:
-                if os.path.exists(file_location):
-                    os.remove(file_location)
+            with open(file_location, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            files_to_process.append((file_location, "PDF"))
 
-        # 2. Process URL if present
+        # 2. Process URL if present (do this in background too)
         if url:
-             success, result = ingest_file(url, bot_id)
-             if success:
-                 total_chunks += result
-             else:
-                 errors.append(f"URL Error: {result}")
+            files_to_process.append((url, "URL"))
 
-        if total_chunks > 0:
-            return {"status": "success", "chunks": total_chunks, "bot_id": bot_id}
-        else:
-             # If both failed or nothing produced chunks
-             raise HTTPException(status_code=500, detail="; ".join(errors) or "No content ingested")
+        # 3. Save CSV file if present
+        if csvfile:
+            file_location = f"temp_{csvfile.filename}"
+            with open(file_location, "wb") as buffer:
+                shutil.copyfileobj(csvfile.file, buffer)
+            files_to_process.append((file_location, "CSV"))
+
+        # Start background processing thread
+        file_info = {"files": files_to_process}
+        background_thread = Thread(
+            target=process_files_background, 
+            args=(file_info, bot_id, user.user.id),
+            daemon=True
+        )
+        background_thread.start()
+
+        # Return immediately with bot info
+        return {
+            "status": "success",
+            "chunks": 0,  # We'll update this when processing completes
+            "bot_id": bot_id,
+            "message": "Bot created! Your knowledge sources are being processed in the background."
+        }
+
     except Exception as e:
-        print(f"Error ingesting file: {e}")
+        print(f"Error saving files: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -265,6 +298,79 @@ async def chat(request: ChatRequest):
         print(f"Error logging messages: {e}")
 
     return {"answer": answer}
+
+@app.post("/bots/{bot_id}/telegram")
+async def connect_telegram(
+    bot_id:str,
+    token: str = Form(...),
+    user: dict = Depends(verify_user),
+    user_token: str = Depends(get_token)
+
+):
+    
+    user_supabase = get_auth_client(user_token)
+
+    try:
+        user_supabase.table("bots").update({"telegram_bot_token":token}).eq("id",bot_id).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update database:{str(e)}")
+    
+
+    BASE_URL = "https://816e5d5c5fe4.ngrok-free.app"
+    webhook_url = f"{BASE_URL}/telegram-webhook/{bot_id}"
+
+    telegram_api =f"https://api.telegram.org/bot{token}/setWebhook?url={webhook_url}"
+
+    async with httpx.AsyncClient() as client:
+        resp= await client.get(telegram_api)
+        if resp.status_code !=200:
+            raise HTTPException(status_code=500, detail=f"Telegram API error: {resp.text}")
+    
+    return {"status":"success","detail":"Telegram bot connected"}
+
+@app.post("/telegram-webhook/{bot_id}")
+async def telegram_handler(bot_id: str, request: Request):
+    """
+    Receives incoming messages from Telegram, gets AI answer, and replies.
+    """
+    data = await request.json()
+    
+    # Check if it's a message (not an edit or status update)
+    if "message" not in data:
+        return {"status": "ignored"}
+    
+    chat_id = data["message"]["chat"]["id"]
+    incoming_text = data["message"].get("text", "")
+    
+    if not incoming_text:
+        return {"status": "ignored"}
+
+    # 1. Fetch Bot Token (We need it to reply)
+    # Using admin client because Telegram requests don't have user session tokens
+    client = supabase_admin if supabase_admin else supabase
+    response = client.table("bots").select("telegram_bot_token").eq("id", bot_id).execute()
+    
+    if not response.data or not response.data[0]['telegram_bot_token']:
+        print(f"Error: No token found for bot {bot_id}")
+        return {"status": "error"}
+        
+    bot_token = response.data[0]['telegram_bot_token']
+    
+    # 2. Get Answer from RAG
+    api_key = os.getenv("GEMINI_API_KEY")
+    ai_response = get_answer(bot_id, incoming_text, api_key)
+    
+    # 3. Send Reply to Telegram
+    send_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": ai_response
+    }
+    
+    async with httpx.AsyncClient() as client:
+        await client.post(send_url, json=payload)
+        
+    return {"status": "success"}
 
 @app.post("/execute-workflow")
 async def execute_workflow(request: WorkflowRequest):

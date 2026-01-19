@@ -1,3 +1,5 @@
+import { form } from "framer-motion/client";
+
 const API_URL = 'http://localhost:8000';
 
 export interface IngestResponse {
@@ -24,7 +26,7 @@ export const api = {
     /**
      * Uploads a PDF document to the backend for ingestion.
      */
-    ingestDocument: async (name: string, file: File | null, token: string, url?: string): Promise<IngestResponse> => {
+    ingestDocument: async (name: string, file: File | null, token: string, url?: string, csvFile ?: File): Promise<IngestResponse> => {
         const formData = new FormData();
         formData.append('name', name);
 
@@ -34,6 +36,10 @@ export const api = {
 
         if (url) {
             formData.append('url', url);
+        }
+
+        if (csvFile){
+            formData.append('csvfile',csvFile);
         }
 
         const response = await fetch(`${API_URL}/ingest`, {
@@ -109,5 +115,23 @@ export const api = {
         }
 
         return response.json();
-    }
+    },
+
+    connectTelegram: async (botId: string, telegramToken: string, token: string) => {
+        const formData = new FormData();
+        formData.append('token',telegramToken);
+
+        const response = await fetch(`${API_URL}/bots/${botId}/telegram`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            },
+            body: formData, 
+        });
+        if (!response.ok) {
+            const err = await response.text();
+            throw new Error(err || 'Failed to connect Telegram');
+        }
+        return response.json();
+        }
 };
