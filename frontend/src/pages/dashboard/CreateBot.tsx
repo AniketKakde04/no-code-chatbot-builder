@@ -186,7 +186,7 @@ export const CreateBot = () => {
                                 />
                                 <div className={`
                                     border-2 border-dashed rounded-xl p-6 text-center transition-all
-                                    ${file
+                                    ${csvfile
                                         ? 'border-emerald-500/50 bg-emerald-500/5'
                                         : 'border-slate-700 bg-slate-950 hover:border-indigo-500/50 hover:bg-slate-900'
                                     }

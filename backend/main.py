@@ -1,20 +1,23 @@
 import os
+import pathlib
+from dotenv import load_dotenv
+
+# --- CRITICAL FIX: LOAD ENV FIRST ---
+# We must load the .env file BEFORE importing workflow_engine.
+# Otherwise, the Tavily tool initializes immediately, finds no API Key, and crashes.
+env_path = pathlib.Path(__file__).parent / '.env'
+load_dotenv(dotenv_path=env_path)
+
 import shutil
-from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Depends,Request
+from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from dotenv import load_dotenv
-import pathlib
 import httpx
 from typing import List, Dict, Any
 from workflow_engine import build_and_run_workflow
 from supabase import create_client, Client, ClientOptions
 from rag import ingest_file, get_answer, delete_bot_data
 from threading import Thread
-
-# Load .env explicitly to be safe
-env_path = pathlib.Path(__file__).parent / '.env'
-load_dotenv(dotenv_path=env_path)
 
 app = FastAPI()
 
@@ -26,7 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize Supabase (for token verification and admin access)
+# Initialize Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
@@ -41,16 +44,9 @@ try:
         # Global client for generic operations
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     
-    service_key = os.getenv("SUPABASE_SERVICE_KEY")
-    # Admin client for bypassing RLS (logging/analytics)
-    if service_key:
-        print(f"✅ Found Service Key: {service_key[:5]}...") # Prints first 5 chars
-        supabase_admin: Client = create_client(SUPABASE_URL, service_key)
-    else:
-        supabase_admin = None
-        print("❌ ERROR: SUPABASE_SERVICE_KEY is missing from .env or not loaded!")
-    # --- DEBUGGING BLOCK END ---
-    if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+    if SUPABASE_SERVICE_KEY:
+        # Admin client for bypassing RLS (logging/analytics)
+        print(f"✅ Found Service Key: {SUPABASE_SERVICE_KEY[:5]}...") 
         supabase_admin: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
     else:
         supabase_admin = None
@@ -79,10 +75,7 @@ async def get_token(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid Authorization Header Format")
 
 async def verify_user(token: str = Depends(get_token)):
-    """
-    Verifies the token with Supabase.
-    Returns the user object if valid.
-    """
+    """Verifies the token with Supabase."""
     try:
         user = supabase.auth.get_user(token)
         if not user:
@@ -100,9 +93,7 @@ def get_auth_client(token: str) -> Client:
     )
 
 def process_files_background(file_info: Dict[str, Any], bot_id: str, user_id: str):
-    """
-    Background task to process files without blocking the response.
-    """
+    """Background task to process files without blocking the response."""
     try:
         for file_location, file_type in file_info['files']:
             try:
@@ -112,7 +103,6 @@ def process_files_background(file_info: Dict[str, Any], bot_id: str, user_id: st
             finally:
                 if os.path.exists(file_location):
                     os.remove(file_location)
-        
         print(f"Background processing completed for bot_id: {bot_id}")
     except Exception as e:
         print(f"Error in background processing: {e}")
@@ -125,7 +115,7 @@ def health_check():
 async def ingest_document(
     name: str = Form(...),
     file: UploadFile = File(None),
-    url:str=Form(None),
+    url: str = Form(None),
     user: dict = Depends(verify_user),
     token: str = Depends(get_token),
     csvfile: UploadFile = File(None)
@@ -135,17 +125,14 @@ async def ingest_document(
     if not file and not url and not csvfile:
         raise HTTPException(status_code=400,detail="Must provide at least one source (PDF, CSV, or URL)")
     
-    # Create authenticated client for RLS
     user_supabase = get_auth_client(token)
 
-    # 1. Save to Supabase to get a unique Bot UUID
     try:
         response = user_supabase.table("bots").insert({
             "name": name,
             "user_id": user.user.id
         }).execute()
         
-        # supabase-py v2 returns data object
         new_bot = response.data[0]
         bot_id = new_bot['id']
         print(f"Created bot with ID: {bot_id}")
@@ -154,29 +141,24 @@ async def ingest_document(
         print(f"Database error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create bot record: {str(e)}")
 
-    # 2. Save files temporarily and start background processing
     files_to_process = []
     
     try:
-        # 1. Save PDF file if present
         if file:
             file_location = f"temp_{file.filename}"
             with open(file_location, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
             files_to_process.append((file_location, "PDF"))
 
-        # 2. Process URL if present (do this in background too)
         if url:
             files_to_process.append((url, "URL"))
 
-        # 3. Save CSV file if present
         if csvfile:
             file_location = f"temp_{csvfile.filename}"
             with open(file_location, "wb") as buffer:
                 shutil.copyfileobj(csvfile.file, buffer)
             files_to_process.append((file_location, "CSV"))
 
-        # Start background processing thread
         file_info = {"files": files_to_process}
         background_thread = Thread(
             target=process_files_background, 
@@ -185,10 +167,9 @@ async def ingest_document(
         )
         background_thread.start()
 
-        # Return immediately with bot info
         return {
             "status": "success",
-            "chunks": 0,  # We'll update this when processing completes
+            "chunks": 0,
             "bot_id": bot_id,
             "message": "Bot created! Your knowledge sources are being processed in the background."
         }
@@ -197,12 +178,8 @@ async def ingest_document(
         print(f"Error saving files: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/bots")
-async def get_user_bots(
-    user: dict = Depends(verify_user),
-    token: str = Depends(get_token)
-):
+async def get_user_bots(user: dict = Depends(verify_user), token: str = Depends(get_token)):
     try:
         user_supabase = get_auth_client(token)
         response = user_supabase.table("bots").select("*").eq("user_id", user.user.id).order("created_at", desc=True).execute()
@@ -212,21 +189,14 @@ async def get_user_bots(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/stats")
-async def get_stats(
-    user: dict = Depends(verify_user),
-    token: str = Depends(get_token)
-):
+async def get_stats(user: dict = Depends(verify_user), token: str = Depends(get_token)):
     try:
         user_supabase = get_auth_client(token)
-        
-        # Get all bots for the user
         bots_response = user_supabase.table("bots").select("id").eq("user_id", user.user.id).execute()
         bot_ids = [b['id'] for b in bots_response.data]
         
         total_messages = 0
-        
         if bot_ids:
-             # Use the authenticated client for messages too (assuming 'Owners can view messages' policy)
              messages_response = user_supabase.table("messages").select("id", count="exact").in_("bot_id", bot_ids).execute()
              total_messages = messages_response.count
              
@@ -240,25 +210,14 @@ async def get_stats(
         return {"total_bots": 0, "total_messages": 0, "total_conversations": 0}
 
 @app.delete("/bots/{bot_id}")
-async def delete_bot(
-    bot_id: str,
-    user: dict = Depends(verify_user),
-    token: str = Depends(get_token)
-):
+async def delete_bot(bot_id: str, user: dict = Depends(verify_user), token: str = Depends(get_token)):
     print(f"Deleting bot {bot_id} for user {user.user.id}")
-    
     user_supabase = get_auth_client(token)
     
-    # 1. Delete from Supabase
     try:
-        # Use admin client if available to bypass potential missing DELETE RLS policies
-        # We still enforce user_id match to ensure security (users can only delete their own bots)
         client = supabase_admin if supabase_admin else user_supabase
-        
         response = client.table("bots").delete().eq("id", bot_id).eq("user_id", user.user.id).execute()
         
-        # Check if anything was actually deleted
-        # Note: If RLS is missing and we use user_supabase, this might return empty data but no error
         if not response.data:
              print(f"Delete failed. Bot {bot_id} not found or RLS blocked delete.")
              raise HTTPException(status_code=404, detail="Bot not found or unauthorized (Check RLS policies)")
@@ -268,10 +227,7 @@ async def delete_bot(
         if "404" in str(e): raise e
         raise HTTPException(status_code=500, detail=f"Failed to delete bot: {str(e)}")
 
-    # 2. Delete from Vector Store
-    # We proceed even if DB delete failed? No, only if DB delete succeeded.
     delete_bot_data(bot_id)
-    
     return {"status": "success", "bot_id": bot_id}
 
 @app.post("/chat")
@@ -285,11 +241,8 @@ async def chat(request: ChatRequest):
     
     answer = get_answer(request.bot_id, request.question, api_key)
     
-    # Log interaction to Supabase using Admin Client to bypass RLS
     try:
         client_to_use = supabase_admin if supabase_admin else supabase
-        
-        # We allow this to fail silently so it doesn't break the chat if DB is down
         client_to_use.table("messages").insert([
             {"bot_id": request.bot_id, "role": "user", "content": request.question},
             {"bot_id": request.bot_id, "role": "bot", "content": answer}
@@ -300,14 +253,7 @@ async def chat(request: ChatRequest):
     return {"answer": answer}
 
 @app.post("/bots/{bot_id}/telegram")
-async def connect_telegram(
-    bot_id:str,
-    token: str = Form(...),
-    user: dict = Depends(verify_user),
-    user_token: str = Depends(get_token)
-
-):
-    
+async def connect_telegram(bot_id:str, token: str = Form(...), user: dict = Depends(verify_user), user_token: str = Depends(get_token)):
     user_supabase = get_auth_client(user_token)
 
     try:
@@ -315,7 +261,6 @@ async def connect_telegram(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update database:{str(e)}")
     
-
     BASE_URL = "https://816e5d5c5fe4.ngrok-free.app"
     webhook_url = f"{BASE_URL}/telegram-webhook/{bot_id}"
 
@@ -330,23 +275,13 @@ async def connect_telegram(
 
 @app.post("/telegram-webhook/{bot_id}")
 async def telegram_handler(bot_id: str, request: Request):
-    """
-    Receives incoming messages from Telegram, gets AI answer, and replies.
-    """
     data = await request.json()
-    
-    # Check if it's a message (not an edit or status update)
-    if "message" not in data:
-        return {"status": "ignored"}
+    if "message" not in data: return {"status": "ignored"}
     
     chat_id = data["message"]["chat"]["id"]
     incoming_text = data["message"].get("text", "")
-    
-    if not incoming_text:
-        return {"status": "ignored"}
+    if not incoming_text: return {"status": "ignored"}
 
-    # 1. Fetch Bot Token (We need it to reply)
-    # Using admin client because Telegram requests don't have user session tokens
     client = supabase_admin if supabase_admin else supabase
     response = client.table("bots").select("telegram_bot_token").eq("id", bot_id).execute()
     
@@ -355,17 +290,11 @@ async def telegram_handler(bot_id: str, request: Request):
         return {"status": "error"}
         
     bot_token = response.data[0]['telegram_bot_token']
-    
-    # 2. Get Answer from RAG
     api_key = os.getenv("GEMINI_API_KEY")
     ai_response = get_answer(bot_id, incoming_text, api_key)
     
-    # 3. Send Reply to Telegram
     send_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": ai_response
-    }
+    payload = {"chat_id": chat_id, "text": ai_response}
     
     async with httpx.AsyncClient() as client:
         await client.post(send_url, json=payload)
@@ -376,18 +305,14 @@ async def telegram_handler(bot_id: str, request: Request):
 async def execute_workflow(request: WorkflowRequest):
     print(f"Executing Workflow with {len(request.nodes)} nodes")
     try:
-        # Run the LangGraph Engine
         result = build_and_run_workflow(request.nodes, request.edges, request.initial_input)
-        
-        # Return the final output
         return {
             "status": "success", 
-            "result": result.get('current_input', 'No output'), 
-            "full_state": result
+            "result": result.get('result', 'No result'), 
+            "full_history": result.get('full_history', [])
         }
     except Exception as e:
         print(f"Workflow execution failed: {e}")
-        # In a real app, we would return a proper error message
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import { EmbedBot } from '@/pages/dashboard/EmbedBot';
 import { AgentBuilder } from '@/pages/agent-builder/AgentBuilder';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 import { TelegramIntegration } from '@/pages/dashboard/TelegramIntegration';
+
 function App() {
   return (
     <AuthProvider>
@@ -21,7 +22,7 @@ function App() {
             <Route path="/signup" element={<SignUp />} />
           </Route>
 
-          {/* Protected Dashboard Routes */}
+          {/* Protected Dashboard Routes (WITH Sidebar) */}
           <Route element={
             <ProtectedRoute>
               <AppLayout />
@@ -30,9 +31,15 @@ function App() {
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/create-bot" element={<CreateBot />} />
             <Route path="/embed/:botId" element={<EmbedBot />} />
-            <Route path="/agent-builder" element={<AgentBuilder />} />
-<Route path="/bot/:botId/telegram" element={<TelegramIntegration />} />
+            <Route path="/bot/:botId/telegram" element={<TelegramIntegration />} />
           </Route>
+
+          {/* Standalone Builder Route (NO Sidebar - Full Screen) */}
+          <Route path="/agent-builder" element={
+            <ProtectedRoute>
+              <AgentBuilder />
+            </ProtectedRoute>
+          } />
 
           {/* Default Redirect */}
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
@@ -57,6 +64,5 @@ const ProtectedRoute = ({ children }: { children: React.ReactElement }) => {
 
   return children;
 };
-
 
 export default App;
