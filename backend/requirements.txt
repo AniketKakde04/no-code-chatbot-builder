@@ -15,3 +15,7 @@ python-dotenv
 pydantic
 beautifulsoup4
 httpx
+mcp
+langchain-mcp-adapters
+nest_asyncio
+tavily-python
