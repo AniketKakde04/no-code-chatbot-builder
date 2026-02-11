@@ -3,8 +3,6 @@ import pathlib
 from dotenv import load_dotenv
 
 # --- CRITICAL FIX: LOAD ENV FIRST ---
-# We must load the .env file BEFORE importing workflow_engine.
-# Otherwise, the Tavily tool initializes immediately, finds no API Key, and crashes.
 env_path = pathlib.Path(__file__).parent / '.env'
 load_dotenv(dotenv_path=env_path)
 
@@ -13,7 +11,7 @@ from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Depe
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from workflow_engine import build_and_run_workflow
 from supabase import create_client, Client, ClientOptions
 from rag import ingest_file, get_answer, delete_bot_data
@@ -34,23 +32,14 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    print("Error: SUPABASE_URL or SUPABASE_KEY not set in .env file")
-else:
-    print(f"Loaded SUPABASE_URL: {SUPABASE_URL[:10]}...") 
-
 try:
     if SUPABASE_URL and SUPABASE_KEY:
-        # Global client for generic operations
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     
     if SUPABASE_SERVICE_KEY:
-        # Admin client for bypassing RLS (logging/analytics)
-        print(f"✅ Found Service Key: {SUPABASE_SERVICE_KEY[:5]}...") 
         supabase_admin: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
     else:
         supabase_admin = None
-        print("Warning: SUPABASE_SERVICE_KEY not found. Chat logging may fail due to RLS.")
 except Exception as e:
     print(f"Error initializing Supabase: {e}")
     supabase = None
@@ -66,16 +55,14 @@ class ChatRequest(BaseModel):
     question: str
 
 async def get_token(authorization: str = Header(None)):
-    """Extracts the JWT token from the Authorization header."""
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing Authorization Header")
     try:
-        return authorization.split(" ")[1] # Remove "Bearer "
+        return authorization.split(" ")[1] 
     except IndexError:
         raise HTTPException(status_code=401, detail="Invalid Authorization Header Format")
 
 async def verify_user(token: str = Depends(get_token)):
-    """Verifies the token with Supabase."""
     try:
         user = supabase.auth.get_user(token)
         if not user:
@@ -85,7 +72,6 @@ async def verify_user(token: str = Depends(get_token)):
         raise HTTPException(status_code=401, detail="Session Expired or Invalid")
 
 def get_auth_client(token: str) -> Client:
-    """Creates a Supabase client authenticated as the user."""
     return create_client(
         SUPABASE_URL, 
         SUPABASE_KEY, 
@@ -114,15 +100,15 @@ def health_check():
 @app.post("/ingest")
 async def ingest_document(
     name: str = Form(...),
-    file: UploadFile = File(None),
-    url: str = Form(None),
+    files: List[UploadFile] = File(None),
+    urls: List[str] = Form(None),
     user: dict = Depends(verify_user),
     token: str = Depends(get_token),
-    csvfile: UploadFile = File(None)
+    csvfiles: List[UploadFile] = File(None)
 ):
     print(f"Ingesting for user: {user.user.id}")
 
-    if not file and not url and not csvfile:
+    if not files and not urls and not csvfiles:
         raise HTTPException(status_code=400,detail="Must provide at least one source (PDF, CSV, or URL)")
     
     user_supabase = get_auth_client(token)
@@ -144,20 +130,23 @@ async def ingest_document(
     files_to_process = []
     
     try:
-        if file:
-            file_location = f"temp_{file.filename}"
-            with open(file_location, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-            files_to_process.append((file_location, "PDF"))
+        if files:
+            for file in files:
+                file_location = f"temp_{file.filename}"
+                with open(file_location, "wb") as buffer:
+                    shutil.copyfileobj(file.file, buffer)
+                files_to_process.append((file_location, "PDF"))
 
-        if url:
-            files_to_process.append((url, "URL"))
+        if urls:
+            for url in urls:
+                files_to_process.append((url, "URL"))
 
-        if csvfile:
-            file_location = f"temp_{csvfile.filename}"
-            with open(file_location, "wb") as buffer:
-                shutil.copyfileobj(csvfile.file, buffer)
-            files_to_process.append((file_location, "CSV"))
+        if csvfiles:
+            for csvfile in csvfiles:
+                file_location = f"temp_{csvfile.filename}"
+                with open(file_location, "wb") as buffer:
+                    shutil.copyfileobj(csvfile.file, buffer)
+                files_to_process.append((file_location, "CSV"))
 
         file_info = {"files": files_to_process}
         background_thread = Thread(
@@ -178,6 +167,78 @@ async def ingest_document(
         print(f"Error saving files: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.patch("/bots/{bot_id}")
+async def update_bot(
+    bot_id: str,
+    name: Optional[str] = Form(None),
+    files: List[UploadFile] = File(None),
+    urls: List[str] = Form(None),
+    csvfiles: List[UploadFile] = File(None),
+    clear_history: bool = Form(False),
+    user: dict = Depends(verify_user),
+    token: str = Depends(get_token)
+):
+    """
+    Updates bot name and optionally adds/replaces knowledge sources.
+    """
+    user_supabase = get_auth_client(token)
+    
+    # 1. Verify ownership and Update Name
+    try:
+        update_data = {}
+        if name:
+            update_data["name"] = name
+            
+        if update_data:
+            response = user_supabase.table("bots").update(update_data).eq("id", bot_id).eq("user_id", user.user.id).execute()
+            if not response.data:
+                 raise HTTPException(status_code=404, detail="Bot not found or unauthorized")
+    except Exception as e:
+         if "404" in str(e): raise e
+         raise HTTPException(status_code=500, detail=f"Database update failed: {str(e)}")
+
+    # 2. Handle Knowledge Base Updates
+    if files or urls or csvfiles or clear_history:
+        # If clear_history is requested, wipe vector store first
+        if clear_history:
+            print(f"Clearing knowledge base for bot {bot_id}")
+            delete_bot_data(bot_id)
+
+        # Prepare new files for ingestion
+        files_to_process = []
+        try:
+            if files:
+                for file in files:
+                    file_location = f"temp_{file.filename}"
+                    with open(file_location, "wb") as buffer:
+                        shutil.copyfileobj(file.file, buffer)
+                    files_to_process.append((file_location, "PDF"))
+
+            if urls:
+                for url in urls:
+                    files_to_process.append((url, "URL"))
+
+            if csvfiles:
+                for csvfile in csvfiles:
+                    file_location = f"temp_{csvfile.filename}"
+                    with open(file_location, "wb") as buffer:
+                        shutil.copyfileobj(csvfile.file, buffer)
+                    files_to_process.append((file_location, "CSV"))
+            
+            if files_to_process:
+                file_info = {"files": files_to_process}
+                background_thread = Thread(
+                    target=process_files_background, 
+                    args=(file_info, bot_id, user.user.id),
+                    daemon=True
+                )
+                background_thread.start()
+                
+        except Exception as e:
+             raise HTTPException(status_code=500, detail=f"File processing failed: {str(e)}")
+
+    return {"status": "success", "message": "Bot updated successfully"}
+
 @app.get("/bots")
 async def get_user_bots(user: dict = Depends(verify_user), token: str = Depends(get_token)):
     try:
@@ -185,7 +246,17 @@ async def get_user_bots(user: dict = Depends(verify_user), token: str = Depends(
         response = user_supabase.table("bots").select("*").eq("user_id", user.user.id).order("created_at", desc=True).execute()
         return response.data
     except Exception as e:
-        print(f"Error fetching bots: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/bots/{bot_id}")
+async def get_bot_details(bot_id: str, user: dict = Depends(verify_user), token: str = Depends(get_token)):
+    try:
+        user_supabase = get_auth_client(token)
+        response = user_supabase.table("bots").select("*").eq("id", bot_id).eq("user_id", user.user.id).single().execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Bot not found")
+        return response.data
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/stats")
@@ -206,7 +277,6 @@ async def get_stats(user: dict = Depends(verify_user), token: str = Depends(get_
             "total_conversations": int(total_messages / 2)
         }
     except Exception as e:
-        print(f"Error fetching stats: {e}")
         return {"total_bots": 0, "total_messages": 0, "total_conversations": 0}
 
 @app.delete("/bots/{bot_id}")
@@ -219,11 +289,9 @@ async def delete_bot(bot_id: str, user: dict = Depends(verify_user), token: str 
         response = client.table("bots").delete().eq("id", bot_id).eq("user_id", user.user.id).execute()
         
         if not response.data:
-             print(f"Delete failed. Bot {bot_id} not found or RLS blocked delete.")
-             raise HTTPException(status_code=404, detail="Bot not found or unauthorized (Check RLS policies)")
+             raise HTTPException(status_code=404, detail="Bot not found")
              
     except Exception as e:
-        print(f"Database error deleting bot: {e}")
         if "404" in str(e): raise e
         raise HTTPException(status_code=500, detail=f"Failed to delete bot: {str(e)}")
 
@@ -236,7 +304,6 @@ async def chat(request: ChatRequest):
     api_key = os.getenv("GEMINI_API_KEY")
     
     if not api_key:
-        print("Error: GEMINI_API_KEY is missing in environment variables.")
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY not found")
     
     answer = get_answer(request.bot_id, request.question, api_key)
@@ -286,7 +353,6 @@ async def telegram_handler(bot_id: str, request: Request):
     response = client.table("bots").select("telegram_bot_token").eq("id", bot_id).execute()
     
     if not response.data or not response.data[0]['telegram_bot_token']:
-        print(f"Error: No token found for bot {bot_id}")
         return {"status": "error"}
         
     bot_token = response.data[0]['telegram_bot_token']
@@ -303,7 +369,6 @@ async def telegram_handler(bot_id: str, request: Request):
 
 @app.post("/execute-workflow")
 async def execute_workflow(request: WorkflowRequest):
-    print(f"Executing Workflow with {len(request.nodes)} nodes")
     try:
         result = build_and_run_workflow(request.nodes, request.edges, request.initial_input)
         return {
@@ -312,7 +377,6 @@ async def execute_workflow(request: WorkflowRequest):
             "full_history": result.get('full_history', [])
         }
     except Exception as e:
-        print(f"Workflow execution failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

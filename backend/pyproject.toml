@@ -23,6 +23,7 @@ dependencies = [
     "mcp>=1.26.0",
     "nest-asyncio>=1.6.0",
     "pydantic",
+    "pypdf>=6.6.2",
     "python-dotenv",
     "python-multipart>=0.0.21",
     "sentence-transformers",

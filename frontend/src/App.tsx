@@ -6,6 +6,7 @@ import { SignIn } from '@/pages/auth/SignIn';
 import { SignUp } from '@/pages/auth/SignUp';
 import { Dashboard } from '@/pages/dashboard/Dashboard';
 import { CreateBot } from '@/pages/dashboard/CreateBot';
+import { EditBot } from '@/pages/dashboard/EditBot';
 import { EmbedBot } from '@/pages/dashboard/EmbedBot';
 import { AgentBuilder } from '@/pages/agent-builder/AgentBuilder';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
@@ -30,6 +31,7 @@ function App() {
           }>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/create-bot" element={<CreateBot />} />
+            <Route path="/edit-bot/:botId" element={<EditBot />} />
             <Route path="/embed/:botId" element={<EmbedBot />} />
             <Route path="/bot/:botId/telegram" element={<TelegramIntegration />} />
           </Route>

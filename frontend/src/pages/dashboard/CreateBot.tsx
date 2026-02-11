@@ -1,268 +1,231 @@
 import React, { useState } from 'react';
-import { Upload, CheckCircle, AlertCircle, Loader2, ArrowLeft, Globe, FileText, Plus } from 'lucide-react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { Bot, Upload, FileText, Globe, Plus, X, ArrowRight, ArrowLeft } from 'lucide-react';
 import { api } from '@/services/api';
-import { useAuth } from '@/contexts/AuthContext';
 
-export const CreateBot = () => {
-    const navigate = useNavigate();
-    const { session } = useAuth();
-    const [botName, setBotName] = useState('');
+export function CreateBot() {
+  const navigate = useNavigate();
+  const [step, setStep] = useState(1);
+  const [loading, setLoading] = useState(false);
+  
+  const [name, setName] = useState('');
+  
+  // Data States
+  const [files, setFiles] = useState<File[]>([]);
+  const [csvFiles, setCsvFiles] = useState<File[]>([]);
+  const [urls, setUrls] = useState<string[]>([]);
+  const [currentUrl, setCurrentUrl] = useState('');
 
-    // We keep both states active
-    const [websiteUrl, setWebsiteUrl] = useState('');
-    const [file, setFile] = useState<File | null>(null);
-    const [csvfile, setcsvFile] = useState<File | null>(null);
+  const handleAddUrl = () => {
+    if (currentUrl && !urls.includes(currentUrl)) {
+      setUrls([...urls, currentUrl]);
+      setCurrentUrl('');
+    }
+  };
 
-    const [isUploading, setIsUploading] = useState(false);
-    const [status, setStatus] = useState<{ type: 'success' | 'error' | null; message: string }>({ type: null, message: '' });
+  const removeUrl = (urlToRemove: string) => {
+    setUrls(urls.filter(url => url !== urlToRemove));
+  };
 
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files[0]) {
-            const selectedFile = e.target.files[0];
-            if (selectedFile.type !== 'application/pdf') {
-                setStatus({ type: 'error', message: 'Please upload a valid PDF file.' });
-                return;
-            }
-            setFile(selectedFile);
-            setStatus({ type: null, message: '' });
-        }
-    };
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'pdf' | 'csv') => {
+    if (e.target.files) {
+      const newFiles = Array.from(e.target.files);
+      if (type === 'pdf') {
+        setFiles(prev => [...prev, ...newFiles]);
+      } else {
+        setCsvFiles(prev => [...prev, ...newFiles]);
+      }
+    }
+  };
 
-    const handleCSVFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const removeFile = (index: number, type: 'pdf' | 'csv') => {
+    if (type === 'pdf') {
+      setFiles(files.filter((_, i) => i !== index));
+    } else {
+      setCsvFiles(csvFiles.filter((_, i) => i !== index));
+    }
+  };
 
-        if (e.target.files && e.target.files[0]) {
-            const selectedFile = e.target.files[0];
-            if (selectedFile.type !== 'text/csv') {
-                setStatus({ type: 'error', message: 'Please upload a valid CSV file.' });
-                return;
-            }
-            setcsvFile(selectedFile);
-            setStatus({ type: null, message: '' });
-        }
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
 
-    };
+    try {
+      const formData = new FormData();
+      formData.append('name', name);
+      
+      files.forEach(file => formData.append('files', file));
+      csvFiles.forEach(file => formData.append('csvfiles', file));
+      urls.forEach(url => formData.append('urls', url));
 
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
+      await api.createBot(formData);
+      navigate('/dashboard');
+    } catch (error) {
+      console.error(error);
+      alert('Failed to create bot. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-        if (!botName.trim()) {
-            setStatus({ type: 'error', message: 'Please enter a name for your bot.' });
-            return;
-        }
-
-        // Validate that at least ONE source is provided
-        if (!file && !websiteUrl.trim() && !csvfile) {
-            setStatus({ type: 'error', message: 'Please provide at least one source (PDF ,website,csv).' });
-            return;
-        }
-
-        if (!session?.access_token) {
-            setStatus({ type: 'error', message: 'You must be logged in to create a bot.' });
-            return;
-        }
-
-        setIsUploading(true);
-        setStatus({ type: null, message: '' });
-
-        try {
-            // Send both! The backend will handle whatever is not null/empty.
-            const result = await api.ingestDocument(
-                botName,
-                file, // Send file if it exists
-                session.access_token,
-                websiteUrl || undefined, // Send URL if it exists
-                csvfile
-            );
-
-            setStatus({
-                type: 'success',
-                message: `Success! ${result.chunks} text chunks processed from all sources. Your bot is ready.`
-            });
-
-            const botId = result.bot_id;
-
-            setTimeout(() => {
-                navigate(`/embed/${botId}`);
-            }, 1500);
-
-        } catch (error: any) {
-            setStatus({ type: 'error', message: error.message || 'Failed to create bot.' });
-        } finally {
-            setIsUploading(false);
-        }
-    };
-
-    return (
-        <div className="max-w-2xl mx-auto space-y-8">
-            <div className="flex items-center gap-4">
-                <Link to="/dashboard" className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors">
-                    <ArrowLeft className="w-5 h-5" />
-                </Link>
-                <div>
-                    <h1 className="text-3xl font-bold text-white">Create New Chatbot</h1>
-                    <p className="text-slate-400">Combine data sources to train your comprehensive AI agent</p>
-                </div>
-            </div>
-
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 md:p-8">
-                <form onSubmit={handleSubmit} className="space-y-8">
-                    {/* Bot Name Input */}
-                    <div className="space-y-2">
-                        <label htmlFor="botName" className="text-sm font-medium text-slate-300">
-                            Chatbot Name
-                        </label>
-                        <input
-                            id="botName"
-                            type="text"
-                            value={botName}
-                            onChange={(e) => setBotName(e.target.value)}
-                            placeholder="e.g., My Personal Assistant..."
-                            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-                        />
-                    </div>
-
-                    <div className="space-y-6">
-                        <h3 className="text-lg font-medium text-white border-b border-slate-800 pb-2">Knowledge Sources</h3>
-
-                        {/* Source 1: PDF */}
-                        <div className="space-y-2">
-                            <label className="text-sm font-medium text-slate-300 flex items-center gap-2">
-                                <FileText className="w-4 h-4 text-indigo-400" />
-                                1. Upload PDF (Optional)
-                            </label>
-                            <div className="relative group">
-                                <input
-                                    type="file"
-                                    accept=".pdf"
-                                    onChange={handleFileChange}
-                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                />
-                                <div className={`
-                                    border-2 border-dashed rounded-xl p-6 text-center transition-all
-                                    ${file
-                                        ? 'border-emerald-500/50 bg-emerald-500/5'
-                                        : 'border-slate-700 bg-slate-950 hover:border-indigo-500/50 hover:bg-slate-900'
-                                    }
-                                `}>
-                                    <div className="flex flex-row items-center justify-center gap-4">
-                                        {file ? (
-                                            <>
-                                                <div className="p-2 rounded-full bg-emerald-500/10 text-emerald-400">
-                                                    <CheckCircle className="w-5 h-5" />
-                                                </div>
-                                                <div className="text-left">
-                                                    <p className="font-medium text-emerald-400">{file.name}</p>
-                                                    <p className="text-xs text-emerald-500/60">
-                                                        {(file.size / 1024 / 1024).toFixed(2)} MB attached
-                                                    </p>
-                                                </div>
-                                            </>
-                                        ) : (
-                                            <>
-                                                <Upload className="w-5 h-5 text-slate-500" />
-                                                <span className="text-slate-400">Drop PDF here or click to upload</span>
-                                            </>
-                                        )}
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-
-                        {/* Source 2: CSV */}
-
-<div className="space-y-2">
-                            <label className="text-sm font-medium text-slate-300 flex items-center gap-2">
-                                <FileText className="w-4 h-4 text-indigo-400" />
-                                2. Upload CSV (Optional)
-                            </label>
-                            <div className="relative group">
-                                <input
-                                    type="file"
-                                    accept=".csv"
-                                    onChange={handleCSVFileChange}
-                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                />
-                                <div className={`
-                                    border-2 border-dashed rounded-xl p-6 text-center transition-all
-                                    ${csvfile
-                                        ? 'border-emerald-500/50 bg-emerald-500/5'
-                                        : 'border-slate-700 bg-slate-950 hover:border-indigo-500/50 hover:bg-slate-900'
-                                    }
-                                `}>
-                                    <div className="flex flex-row items-center justify-center gap-4">
-                                        {csvfile ? (
-                                            <>
-                                                <div className="p-2 rounded-full bg-emerald-500/10 text-emerald-400">
-                                                    <CheckCircle className="w-5 h-5" />
-                                                </div>
-                                                <div className="text-left">
-                                                    <p className="font-medium text-emerald-400">{csvfile.name}</p>
-                                                    <p className="text-xs text-emerald-500/60">
-                                                        {(csvfile.size / 1024 / 1024).toFixed(2)} MB attached
-                                                    </p>
-                                                </div>
-                                            </>
-                                        ) : (
-                                            <>
-                                                <Upload className="w-5 h-5 text-slate-500" />
-                                                <span className="text-slate-400">Drop csv here or click to upload</span>
-                                            </>
-                                        )}
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Source 2: Website */}
-                        <div className="space-y-2">
-                            <label htmlFor="websiteUrl" className="text-sm font-medium text-slate-300 flex items-center gap-2">
-                                <Globe className="w-4 h-4 text-indigo-400" />
-                                2. Website URL (Optional)
-                            </label>
-                            <div className="relative">
-                                <Globe className="absolute left-4 top-3.5 w-5 h-5 text-slate-500" />
-                                <input
-                                    id="websiteUrl"
-                                    type="url"
-                                    value={websiteUrl}
-                                    onChange={(e) => setWebsiteUrl(e.target.value)}
-                                    placeholder="https://example.com"
-                                    className="w-full pl-12 bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-                                />
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Status Message */}
-                    {status.message && (
-                        <div className={`p-4 rounded-lg flex items-start gap-3 ${status.type === 'error'
-                            ? 'bg-red-500/10 text-red-400 border border-red-500/20'
-                            : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                            }`}>
-                            {status.type === 'error' ? <AlertCircle className="w-5 h-5 shrink-0" /> : <CheckCircle className="w-5 h-5 shrink-0" />}
-                            <p className="text-sm">{status.message}</p>
-                        </div>
-                    )}
-
-                    {/* Submit Button */}
-                    <button
-                        type="submit"
-                        disabled={isUploading || (!file && !websiteUrl && !csvfile) || !botName}
-                        className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg font-medium transition-all shadow-lg shadow-indigo-500/20 flex items-center justify-center gap-2"
-                    >
-                        {isUploading ? (
-                            <>
-                                <Loader2 className="w-5 h-5 animate-spin" />
-                                Ingesting Knowledge...
-                            </>
-                        ) : (
-                            'Create Chatbot'
-                        )}
-                    </button>
-                </form>
-            </div>
+  return (
+    <div className="p-8 max-w-4xl mx-auto">
+      <div className="flex items-center gap-4 mb-8">
+        <button 
+          onClick={() => navigate('/dashboard')}
+          className="p-2 hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-white"
+        >
+          <ArrowLeft className="w-6 h-6" />
+        </button>
+        <div>
+          <h1 className="text-3xl font-bold text-white mb-2">Create New Bot</h1>
+          <p className="text-slate-400">Train your custom AI agent in minutes</p>
         </div>
-    );
-};
+      </div>
+
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="bg-slate-900 border border-slate-800 rounded-2xl p-8"
+      >
+        <form onSubmit={handleSubmit} className="space-y-8">
+          {/* Step 1: Identity */}
+          <div className="space-y-4">
+            <h2 className="text-xl font-semibold text-white flex items-center gap-2">
+              <span className="bg-indigo-600 w-8 h-8 rounded-full flex items-center justify-center text-sm">1</span>
+              Bot Identity
+            </h2>
+            <div className="pl-10">
+              <label className="block text-sm font-medium text-slate-300 mb-2">Bot Name</label>
+              <input
+                type="text"
+                required
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                placeholder="e.g., Marketing Assistant"
+              />
+            </div>
+          </div>
+
+          <div className="border-t border-slate-800 my-8"></div>
+
+          {/* Step 2: Knowledge Sources */}
+          <div className="space-y-6">
+            <h2 className="text-xl font-semibold text-white flex items-center gap-2">
+              <span className="bg-indigo-600 w-8 h-8 rounded-full flex items-center justify-center text-sm">2</span>
+              Knowledge Base (Multi-select)
+            </h2>
+            
+            <div className="pl-10 grid grid-cols-1 md:grid-cols-3 gap-6">
+              
+              {/* PDF Upload */}
+              <div className="space-y-3">
+                <label className="block text-sm font-medium text-slate-300">PDF Documents</label>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 text-center hover:border-indigo-500 transition-colors">
+                  <input
+                    type="file"
+                    accept=".pdf"
+                    multiple
+                    onChange={(e) => handleFileChange(e, 'pdf')}
+                    className="hidden"
+                    id="pdf-upload"
+                  />
+                  <label htmlFor="pdf-upload" className="cursor-pointer flex flex-col items-center gap-2">
+                    <Upload className="w-8 h-8 text-indigo-500" />
+                    <span className="text-sm text-slate-400">Upload PDFs</span>
+                  </label>
+                </div>
+                {/* File List */}
+                {files.length > 0 && (
+                  <div className="space-y-2 max-h-40 overflow-y-auto">
+                    {files.map((f, i) => (
+                      <div key={i} className="flex justify-between items-center bg-slate-800 p-2 rounded text-xs text-white">
+                        <span className="truncate max-w-[150px]">{f.name}</span>
+                        <button type="button" onClick={() => removeFile(i, 'pdf')}><X className="w-3 h-3 text-slate-400 hover:text-red-400" /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* CSV Upload */}
+              <div className="space-y-3">
+                <label className="block text-sm font-medium text-slate-300">CSV Data</label>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 text-center hover:border-emerald-500 transition-colors">
+                  <input
+                    type="file"
+                    accept=".csv"
+                    multiple
+                    onChange={(e) => handleFileChange(e, 'csv')}
+                    className="hidden"
+                    id="csv-upload"
+                  />
+                  <label htmlFor="csv-upload" className="cursor-pointer flex flex-col items-center gap-2">
+                    <FileText className="w-8 h-8 text-emerald-500" />
+                    <span className="text-sm text-slate-400">Upload CSVs</span>
+                  </label>
+                </div>
+                {csvFiles.length > 0 && (
+                  <div className="space-y-2 max-h-40 overflow-y-auto">
+                    {csvFiles.map((f, i) => (
+                      <div key={i} className="flex justify-between items-center bg-slate-800 p-2 rounded text-xs text-white">
+                        <span className="truncate max-w-[150px]">{f.name}</span>
+                        <button type="button" onClick={() => removeFile(i, 'csv')}><X className="w-3 h-3 text-slate-400 hover:text-red-400" /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* URL Input */}
+              <div className="space-y-3">
+                <label className="block text-sm font-medium text-slate-300">Website URLs</label>
+                <div className="flex gap-2">
+                  <input
+                    type="url"
+                    value={currentUrl}
+                    onChange={(e) => setCurrentUrl(e.target.value)}
+                    placeholder="https://"
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddUrl())}
+                  />
+                  <button 
+                    type="button" 
+                    onClick={handleAddUrl}
+                    className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-lg"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                </div>
+                {urls.length > 0 && (
+                  <div className="space-y-2 max-h-40 overflow-y-auto">
+                    {urls.map((url, i) => (
+                      <div key={i} className="flex justify-between items-center bg-slate-800 p-2 rounded text-xs text-white">
+                        <span className="truncate max-w-[150px]">{url}</span>
+                        <button type="button" onClick={() => removeUrl(url)}><X className="w-3 h-3 text-slate-400 hover:text-red-400" /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+            </div>
+          </div>
+
+          <div className="flex justify-end pt-6">
+            <button
+              type="submit"
+              disabled={loading || (!files.length && !urls.length && !csvFiles.length)}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-xl font-medium flex items-center gap-2 transition-all shadow-lg shadow-indigo-500/25 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loading ? 'Creating...' : 'Create Bot'}
+              {!loading && <ArrowRight className="w-5 h-5" />}
+            </button>
+          </div>
+        </form>
+      </motion.div>
+    </div>
+  );
+}
