@@ -19,3 +19,5 @@ mcp
 langchain-mcp-adapters
 nest_asyncio
 tavily-python
+twilio
+python-docx

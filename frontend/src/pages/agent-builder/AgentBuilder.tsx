@@ -17,7 +17,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import { 
     ArrowLeft, Play, Search, Mail, Bot, Loader2, X, Settings, Trash2, Database,
-    Server, MessageSquare, Sparkles, PanelLeftClose, PanelLeftOpen
+    Server, MessageSquare, Sparkles, PanelLeftClose, PanelLeftOpen, BookOpen, FileText
 } from 'lucide-react';
 
 const initialNodes: Node[] = [
@@ -53,51 +53,32 @@ export const AgentBuilder = () => {
     const [showMagicModal, setShowMagicModal] = useState(false);
     const [magicPrompt, setMagicPrompt] = useState("");
 
-    // ==========================================
-    // 🪄 MAGIC BUILD FUNCTION (The Core)
-    // ==========================================
+    // --- MAGIC BUILD ---
     const handleMagicBuild = async () => {
         if (!magicPrompt.trim()) return;
         setIsGenerating(true);
         try {
-            // 1. Send Prompt to Backend
             const response = await fetch('http://localhost:8000/generate-workflow', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ prompt: magicPrompt })
             });
             const data = await response.json();
-            
             if (data.status === 'success') {
-                // 2. Convert Backend JSON to React Flow Nodes
-                const newNodes = data.data.nodes.map((n: any) => ({
+                setNodes(data.data.nodes.map((n: any) => ({
                     ...n,
-                    // React Flow requires type 'input' or 'default' specifically
                     type: n.data.backendType === 'input' ? 'input' : 'default',
                     style: getStyleForType(n.data.backendType)
-                }));
-                
-                const newEdges = data.data.edges.map((e: any) => ({ 
-                    ...e, 
-                    animated: true, 
-                    style: { stroke: '#fff', strokeWidth: 2 } 
-                }));
-
-                // 3. Update Canvas
-                setNodes(newNodes);
-                setEdges(newEdges);
+                })));
+                setEdges(data.data.edges.map((e: any) => ({ ...e, animated: true, style: { stroke: '#fff' } })));
                 setShowMagicModal(false);
                 setMagicPrompt("");
             }
-        } catch (e) { 
-            console.error(e);
-            alert("Magic Build failed. Check backend logs."); 
-        } finally { 
-            setIsGenerating(false); 
-        }
+        } catch (e) { alert("Magic Build failed"); } 
+        finally { setIsGenerating(false); }
     };
 
-    // --- EXECUTE WORKFLOW ---
+    // --- EXECUTE ---
     const runAgent = async () => {
         setIsRunning(true);
         setResult(null);
@@ -130,8 +111,10 @@ export const AgentBuilder = () => {
             case 'input': return { ...base, background: '#10b981' };
             case 'agent': return { ...base, background: '#6366f1' };
             case 'tool': return { ...base, background: '#f59e0b' };
+            case 'knowledge': return { ...base, background: '#0ea5e9' };
             case 'email': return { ...base, background: '#ec4899' };
             case 'whatsapp': return { ...base, background: '#25D366' };
+            case 'doc_writer': return { ...base, background: '#f97316' }; // Orange for Files
             case 'mcp': return { ...base, background: '#8b5cf6' };
             default: return base;
         }
@@ -148,7 +131,9 @@ export const AgentBuilder = () => {
                 userPrompt: type === 'input' ? 'Start here...' : undefined,
                 receiverEmail: type === 'email' ? '' : undefined,
                 receiverPhone: type === 'whatsapp' ? '' : undefined,
-                serverCommand: type === 'mcp' ? 'python local_mcp.py' : undefined
+                serverCommand: type === 'mcp' ? 'python local_mcp.py' : undefined,
+                knowledgeBotId: type === 'knowledge' ? '' : undefined,
+                filename: type === 'doc_writer' ? 'report.docx' : undefined
             }, 
             type: type === 'input' ? 'input' : 'default',
             style: { ...getStyleForType(type), background: color }
@@ -190,10 +175,12 @@ export const AgentBuilder = () => {
                         <div className="text-xs font-bold text-slate-500 uppercase mt-4">Tools</div>
                         <button onClick={() => addNode('tool', 'Search', '#f59e0b')} className="flex items-center gap-3 p-3 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-sm"><Search className="w-4 h-4 text-amber-400" /> Web Search</button>
                         <button onClick={() => addNode('mcp', 'MCP Tool', '#8b5cf6')} className="flex items-center gap-3 p-3 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-sm"><Server className="w-4 h-4 text-violet-400" /> MCP Server</button>
+                        <button onClick={() => addNode('knowledge', 'Knowledge Base', '#0ea5e9')} className="flex items-center gap-3 p-3 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-sm"><BookOpen className="w-4 h-4 text-sky-400" /> Knowledge RAG</button>
 
                         <div className="text-xs font-bold text-slate-500 uppercase mt-4">Actions</div>
                         <button onClick={() => addNode('email', 'Email', '#ec4899')} className="flex items-center gap-3 p-3 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-sm"><Mail className="w-4 h-4 text-pink-400" /> Email</button>
                         <button onClick={() => addNode('whatsapp', 'WhatsApp', '#25D366')} className="flex items-center gap-3 p-3 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-sm"><MessageSquare className="w-4 h-4 text-green-400" /> WhatsApp</button>
+                        <button onClick={() => addNode('doc_writer', 'Doc / Word', '#f97316')} className="flex items-center gap-3 p-3 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-sm"><FileText className="w-4 h-4 text-orange-400" /> Write Word Doc</button>
                     </div>
                 </div>
 
@@ -220,9 +207,13 @@ export const AgentBuilder = () => {
                             
                             {selectedNode.data.backendType === 'mcp' && <div><label className="text-xs text-violet-400 font-bold">Command</label><input type="text" value={selectedNode.data.serverCommand as string} onChange={(e) => updateNodeData('serverCommand', e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-sm text-white font-mono" /></div>}
 
+                            {selectedNode.data.backendType === 'knowledge' && <div><label className="text-xs text-sky-400 font-bold">Bot ID (for RAG)</label><input type="text" value={selectedNode.data.knowledgeBotId as string} onChange={(e) => updateNodeData('knowledgeBotId', e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-sm text-white" placeholder="UUID from Dashboard" /><p className="text-[10px] text-slate-500 mt-1">Copy ID from Dashboard URL</p></div>}
+
                             {selectedNode.data.backendType === 'email' && <div><label className="text-xs text-pink-400 font-bold">Receiver Email</label><input type="email" value={selectedNode.data.receiverEmail as string} onChange={(e) => updateNodeData('receiverEmail', e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-sm text-white" /></div>}
 
                             {selectedNode.data.backendType === 'whatsapp' && <div><label className="text-xs text-green-400 font-bold">Receiver Phone</label><input type="text" value={selectedNode.data.receiverPhone as string} onChange={(e) => updateNodeData('receiverPhone', e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-sm text-white" placeholder="+123..." /></div>}
+
+                            {selectedNode.data.backendType === 'doc_writer' && <div><label className="text-xs text-orange-400 font-bold">Filename (Word)</label><input type="text" value={selectedNode.data.filename as string} onChange={(e) => updateNodeData('filename', e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-sm text-white" placeholder="report.docx" /></div>}
 
                             <div className="pt-4 mt-auto border-t border-slate-800"><button onClick={deleteSelectedNode} className="w-full py-2 text-red-500 bg-red-500/10 border border-red-500/50 rounded flex justify-center items-center gap-2 text-sm"><Trash2 className="w-4 h-4" /> Delete</button></div>
                         </div>
@@ -236,7 +227,7 @@ export const AgentBuilder = () => {
                     <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-lg shadow-2xl relative">
                         <button onClick={() => setShowMagicModal(false)} className="absolute top-4 right-4 text-slate-500 hover:text-white"><X className="w-5 h-5" /></button>
                         <div className="flex gap-3 mb-4"><Sparkles className="w-6 h-6 text-purple-400" /><h2 className="text-xl font-bold text-white">Magic Build</h2></div>
-                        <textarea value={magicPrompt} onChange={(e) => setMagicPrompt(e.target.value)} className="w-full h-32 bg-slate-800 border border-slate-700 rounded-xl p-4 text-slate-200 focus:ring-2 focus:ring-purple-500 mb-6 resize-none" placeholder="Describe your agent (e.g. 'Build a researcher that searches for Bitcoin news and emails me')..." />
+                        <textarea value={magicPrompt} onChange={(e) => setMagicPrompt(e.target.value)} className="w-full h-32 bg-slate-800 border border-slate-700 rounded-xl p-4 text-slate-200 focus:ring-2 focus:ring-purple-500 mb-6 resize-none" placeholder="Describe your agent..." />
                         <button onClick={handleMagicBuild} disabled={isGenerating} className="w-full py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold flex justify-center items-center gap-2">{isGenerating ? <Loader2 className="animate-spin" /> : "Generate Workflow"}</button>
                     </div>
                 </div>

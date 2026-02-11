@@ -7,6 +7,9 @@ import nest_asyncio
 import shutil
 from typing import TypedDict, List, Dict, Any, Annotated
 from email.mime.text import MIMEText
+from twilio.rest import Client
+from twilio.base.exceptions import TwilioRestException
+from docx import Document as DocxDocument # NEW IMPORT
 
 # Apply nested asyncio to allow MCP client to run inside FastAPI
 nest_asyncio.apply()
@@ -36,10 +39,8 @@ async def get_mcp_tools(command: str, args: List[str]):
     """
     Connects to a local MCP server via Stdio and returns LangChain tools.
     """
-    # WINDOWS FIX: Wrap in 'cmd /c' to ensure npx/npm batch files execute correctly
     if sys.platform == "win32":
         if command in ["npx", "npm", "npx.cmd", "npm.cmd"]:
-            print(f"🪟 Windows detected: Wrapping '{command}' in 'cmd /c'")
             args = ["/c", command] + args
             command = "cmd"
 
@@ -67,17 +68,13 @@ async def get_mcp_tools(command: str, args: List[str]):
 def get_llm_node(system_instruction: str, user_template: str, bind_tools: bool = False, mcp_config: Dict = None):
     async def llm_node_func(state: AgentState):
         messages = state['messages']
-        
-        # 1. Initialize LLM
         llm = ChatGoogleGenerativeAI(
             google_api_key=os.getenv("GEMINI_API_KEY"), 
             model="gemini-2.5-flash",
             temperature=0
         )
         
-        # 2. Collect All Tools
         all_tools = []
-        
         if bind_tools:
             all_tools.append(tavily_tool)
             
@@ -90,12 +87,10 @@ def get_llm_node(system_instruction: str, user_template: str, bind_tools: bool =
         if all_tools:
             llm = llm.bind_tools(all_tools)
             
-        # 3. Prepare Context
         today = datetime.datetime.now().strftime("%B %d, %Y")
         final_system_msg = f"{system_instruction}\n\nCurrent Date: {today}."
         final_messages = [SystemMessage(content=final_system_msg)] + messages
         
-        # 4. Invoke
         try:
             response = await llm.ainvoke(final_messages)
             return {"messages": [response]}
@@ -110,23 +105,17 @@ def get_email_node(receiver_email: str):
         sender_email = os.getenv("EMAIL_USER")
         sender_password = os.getenv("EMAIL_PASS")
 
-        # 1. Validate Credentials
         if not sender_email or not sender_password:
-            return {"messages": [AIMessage(content="Error: EMAIL_USER or EMAIL_PASS not found in environment variables.")]}
+            return {"messages": [AIMessage(content="Error: EMAIL_USER or EMAIL_PASS not found.")]}
 
-        # 2. Final Validation of Receiver
         final_receiver = receiver_email
         if not final_receiver or not final_receiver.strip():
-             return {"messages": [AIMessage(content="Error: No Receiver Email provided (checked Node Input, RECEIVER_EMAIL env, and EMAIL_USER fallback).")]}
+             final_receiver = sender_email
         
-        print(f"--- SENDING EMAIL TO {final_receiver} ---")
-
-        # 3. Prepare Content
         last_message = state["messages"][-1]
         email_body = str(last_message.content)
 
         try:
-            # UTF-8 for special characters
             msg = MIMEText(email_body, 'plain', 'utf-8')
             msg['Subject'] = "Agent Report"
             msg['From'] = sender_email
@@ -138,9 +127,84 @@ def get_email_node(receiver_email: str):
             
             return {"messages": [AIMessage(content=f"✅ Email sent successfully to {final_receiver}")]}
         except Exception as e:
-            print(f"Email Error: {e}")
             return {"messages": [AIMessage(content=f"❌ Failed to send email: {str(e)}")]}
     return email_node_func
+
+def get_whatsapp_node(receiver_phone: str):
+    def whatsapp_node_func(state: AgentState):
+        sid = os.getenv("TWILIO_ACCOUNT_SID")
+        token = os.getenv("TWILIO_AUTH_TOKEN")
+        from_number = os.getenv("TWILIO_FROM_NUMBER")
+
+        if not sid or not token or not from_number:
+            return {"messages": [AIMessage(content="Error: Twilio Credentials not found.")]}
+
+        if not from_number.startswith("whatsapp:"):
+            from_number = f"whatsapp:{from_number}"
+
+        final_receiver = receiver_phone
+        if not final_receiver or not final_receiver.strip():
+             return {"messages": [AIMessage(content="Error: No Receiver Phone Number provided.")]}
+
+        if not final_receiver.startswith("whatsapp:"):
+            final_receiver = f"whatsapp:{final_receiver}"
+            
+        print(f"--- SENDING WHATSAPP TO {final_receiver} ---")
+
+        last_message = state["messages"][-1]
+        body_text = str(last_message.content)
+        
+        if len(body_text) > 1500:
+            body_text = body_text[:1500] + "... (truncated)"
+
+        try:
+            client = Client(sid, token)
+            message = client.messages.create(
+                body=body_text,
+                from_=from_number,
+                to=final_receiver
+            )
+            return {"messages": [AIMessage(content=f"✅ WhatsApp sent! SID: {message.sid}")]}
+        except TwilioRestException as e:
+            if e.code == 63007:
+                return {"messages": [AIMessage(content=f"❌ Failed: Twilio Channel not found (Sandbox not joined).")]}
+            return {"messages": [AIMessage(content=f"❌ Failed to send WhatsApp: {str(e)}")]}
+        except Exception as e:
+            return {"messages": [AIMessage(content=f"❌ Failed to send WhatsApp: {str(e)}")]}
+
+    return whatsapp_node_func
+
+# --- UPDATED: DOC WRITER NODE (Word .docx) ---
+def get_doc_writer_node(filename: str):
+    """
+    Writes content to a .docx file (compatible with Google Docs).
+    """
+    def doc_writer_node_func(state: AgentState):
+        final_filename = filename if filename and filename.strip() else "agent_output.docx"
+        if not final_filename.endswith(".docx"):
+            final_filename += ".docx"
+            
+        output_dir = "generated_docs"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        file_path = os.path.join(output_dir, final_filename)
+        
+        last_message = state["messages"][-1]
+        content = str(last_message.content)
+        
+        try:
+            # Create a Word Document
+            doc = DocxDocument()
+            doc.add_heading('Agent Generated Report', 0)
+            doc.add_paragraph(content)
+            doc.save(file_path)
+            
+            abs_path = os.path.abspath(file_path)
+            return {"messages": [AIMessage(content=f"✅ Word Document created: {abs_path}")]}
+        except Exception as e:
+            return {"messages": [AIMessage(content=f"❌ Failed to write document: {str(e)}")]}
+
+    return doc_writer_node_func
 
 # --- 5. GRAPH BUILDER ---
 
@@ -149,20 +213,15 @@ def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Dict], r
 
     workflow = StateGraph(AgentState)
     
-    # Check for hardcoded tools
     has_native_tools = any(n.get('data', {}).get('backendType') in ['tool', 'search'] for n in nodes_config)
     
-    # Check for MCP Config
     mcp_config = None
     mcp_node = next((n for n in nodes_config if n.get('data', {}).get('backendType') == 'mcp'), None)
     if mcp_node:
         raw_cmd = mcp_node['data'].get('serverCommand', '')
         if raw_cmd:
             parts = raw_cmd.split(' ')
-            mcp_config = {
-                "command": parts[0],
-                "args": parts[1:]
-            }
+            mcp_config = {"command": parts[0], "args": parts[1:]}
 
     # 1. Add Nodes
     input_override = ""
@@ -188,19 +247,17 @@ def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Dict], r
             workflow.add_node(node_id, lambda state: {})
             
         elif backend_type == 'email':
-            # --- EMAIL PRIORITY LOGIC ---
-            # 1. Frontend Node Input
-            # 2. Env Var: RECEIVER_EMAIL
-            # 3. Env Var: EMAIL_USER (Sender)
-            
             raw_receiver = data.get('receiverEmail')
-            
-            if raw_receiver and raw_receiver.strip():
-                receiver = raw_receiver
-            else:
-                receiver = os.getenv("RECEIVER_EMAIL") or os.getenv("EMAIL_USER")
-                
+            receiver = raw_receiver if raw_receiver and raw_receiver.strip() else os.getenv("RECEIVER_EMAIL") or os.getenv("EMAIL_USER")
             workflow.add_node(node_id, get_email_node(receiver))
+            
+        elif backend_type == 'whatsapp':
+            receiver = data.get('receiverPhone')
+            workflow.add_node(node_id, get_whatsapp_node(receiver))
+            
+        elif backend_type == 'doc_writer':
+            filename = data.get('filename')
+            workflow.add_node(node_id, get_doc_writer_node(filename))
 
     # 2. Add Edges
     for edge in edges_config:
