@@ -7,6 +7,9 @@ import nest_asyncio
 import shutil
 from typing import TypedDict, List, Dict, Any, Annotated
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 from docx import Document as DocxDocument # NEW IMPORT
@@ -30,6 +33,7 @@ from langchain_mcp_adapters.tools import load_mcp_tools
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
     metadata: Dict[str, Any]
+    attachment_path: str  # Path to a file attachment (e.g., from doc_writer)
 
 # --- 2. DEFINE GLOBAL TOOLS ---
 tavily_tool = TavilySearchResults(max_results=3)
@@ -88,7 +92,12 @@ def get_llm_node(system_instruction: str, user_template: str, bind_tools: bool =
             llm = llm.bind_tools(all_tools)
             
         today = datetime.datetime.now().strftime("%B %d, %Y")
-        final_system_msg = f"{system_instruction}\n\nCurrent Date: {today}."
+        final_system_msg = (
+            f"{system_instruction}\n\nCurrent Date: {today}.\n"
+            "IMPORTANT: When presenting your final answer, write in clean, well-structured markdown. "
+            "Do NOT include raw JSON, tool output, or unformatted data in your response. "
+            "Synthesize any information from tools into a polished, human-readable report."
+        )
         final_messages = [SystemMessage(content=final_system_msg)] + messages
         
         try:
@@ -116,10 +125,33 @@ def get_email_node(receiver_email: str):
         email_body = str(last_message.content)
 
         try:
-            msg = MIMEText(email_body, 'plain', 'utf-8')
-            msg['Subject'] = "Agent Report"
-            msg['From'] = sender_email
-            msg['To'] = final_receiver
+            attachment_path = state.get("attachment_path", "")
+        
+            if attachment_path and os.path.isfile(attachment_path):
+                # Send email WITH attachment
+                msg = MIMEMultipart()
+                msg['Subject'] = "Agent Report"
+                msg['From'] = sender_email
+                msg['To'] = final_receiver
+                msg.attach(MIMEText(email_body, 'plain', 'utf-8'))
+            
+                with open(attachment_path, 'rb') as f:
+                    part = MIMEBase('application', 'octet-stream')
+                    part.set_payload(f.read())
+                    encoders.encode_base64(part)
+                    part.add_header(
+                        'Content-Disposition',
+                        f'attachment; filename="{os.path.basename(attachment_path)}"'
+                    )
+                    msg.attach(part)
+            else:
+                # Send plain-text email (no attachment)
+                msg = MIMEText(email_body, 'plain', 'utf-8')
+                msg['Subject'] = "Agent Report"
+                msg['From'] = sender_email
+                msg['To'] = final_receiver
+
+
 
             with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
                 server.login(sender_email, sender_password)
@@ -175,9 +207,134 @@ def get_whatsapp_node(receiver_phone: str):
     return whatsapp_node_func
 
 # --- UPDATED: DOC WRITER NODE (Word .docx) ---
+
+import re
+
+def _add_formatted_text(paragraph, text):
+    """Parse inline markdown (bold **text**) and add runs to a paragraph."""
+    parts = re.split(r'(\*\*.*?\*\*)', text)
+    for part in parts:
+        if part.startswith('**') and part.endswith('**'):
+            run = paragraph.add_run(part[2:-2])
+            run.bold = True
+        else:
+            paragraph.add_run(part)
+
+def _unwrap_structured_content(raw_content: str) -> str:
+    """
+    Detect and unwrap structured/JSON content from LLM output.
+    Handles: Gemini structured output, Tavily search results, etc.
+    Returns clean text ready for markdown parsing.
+    """
+    content = raw_content.strip()
+
+    # --- Try JSON parsing first ---
+    try:
+        import json
+        parsed = json.loads(content)
+        if isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], dict):
+            # LLM structured output: [{"type": "text", "text": "..."}]
+            if all('text' in item for item in parsed):
+                return '\n'.join(item['text'] for item in parsed)
+            # Tavily search results: [{"title": "...", "url": "...", "content": "..."}]
+            if all('content' in item for item in parsed):
+                parts = []
+                for item in parsed:
+                    if item.get('title'):
+                        parts.append(f"## {item['title']}")
+                    if item.get('url'):
+                        parts.append(f"*Source: {item['url']}*")
+                    if item.get('content'):
+                        parts.append(item['content'])
+                    parts.append("")
+                return '\n'.join(parts)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
+
+    # --- Try Python literal eval (for single-quoted dicts) ---
+    if content.startswith("[{") or content.startswith("({')"):
+        try:
+            import ast
+            parsed = ast.literal_eval(content)
+            if isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], dict):
+                if 'text' in parsed[0]:
+                    return '\n'.join(item.get('text', '') for item in parsed)
+                if 'content' in parsed[0]:
+                    parts = []
+                    for item in parsed:
+                        if item.get('title'):
+                            parts.append(f"## {item['title']}")
+                        if item.get('url'):
+                            parts.append(f"*Source: {item['url']}*")
+                        if item.get('content'):
+                            parts.append(item['content'])
+                        parts.append("")
+                    return '\n'.join(parts)
+        except Exception:
+            pass
+
+    return content  # Return as-is if no structured format detected
+
+
+def _parse_content_to_docx(doc, raw_content: str):
+    """
+    Parse markdown-style LLM output into formatted Word document elements.
+    Handles: headings (#), bold (**), bullet points (* / -), and plain paragraphs.
+    First unwraps any structured/JSON wrapper around the content.
+    """
+    content = _unwrap_structured_content(raw_content)
+
+    # Split into lines (handle both literal \n and actual newlines)
+    lines = content.replace('\\n', '\n').split('\n')
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Skip empty lines
+        if not stripped:
+            continue
+
+        # --- Headings ---
+        heading_match = re.match(r'^(#{1,4})\s+(.*)', stripped)
+        if heading_match:
+            level = len(heading_match.group(1))  # 1-4
+            heading_text = heading_match.group(2).replace('**', '')
+            doc.add_heading(heading_text, level=min(level, 4))
+            continue
+
+        # Skip lines with 5+ hashes (not valid Word heading levels)
+        if re.match(r'^#{5,}\s+', stripped):
+            text = re.sub(r'^#+\s+', '', stripped)
+            p = doc.add_paragraph()
+            run = p.add_run(text)
+            run.bold = True
+            continue
+
+        # --- Bullet points (* or -) ---
+        bullet_match = re.match(r'^[\*\-]\s+(.*)', stripped)
+        if bullet_match:
+            bullet_text = bullet_match.group(1)
+            p = doc.add_paragraph(style='List Bullet')
+            _add_formatted_text(p, bullet_text)
+            continue
+
+        # --- Numbered list (1. / 2. etc.) ---
+        numbered_match = re.match(r'^\d+\.\s+(.*)', stripped)
+        if numbered_match:
+            item_text = numbered_match.group(1)
+            p = doc.add_paragraph(style='List Number')
+            _add_formatted_text(p, item_text)
+            continue
+
+        # --- Regular paragraph ---
+        p = doc.add_paragraph()
+        _add_formatted_text(p, stripped)
+
+
 def get_doc_writer_node(filename: str):
     """
     Writes content to a .docx file (compatible with Google Docs).
+    Parses markdown-style LLM output into properly formatted Word elements.
     """
     def doc_writer_node_func(state: AgentState):
         final_filename = filename if filename and filename.strip() else "agent_output.docx"
@@ -196,11 +353,14 @@ def get_doc_writer_node(filename: str):
             # Create a Word Document
             doc = DocxDocument()
             doc.add_heading('Agent Generated Report', 0)
-            doc.add_paragraph(content)
+            _parse_content_to_docx(doc, content)
             doc.save(file_path)
             
             abs_path = os.path.abspath(file_path)
-            return {"messages": [AIMessage(content=f"✅ Word Document created: {abs_path}")]}
+            return {
+                "messages": [AIMessage(content=f"✅ Word Document created: {abs_path}")],
+                "attachment_path": abs_path
+                }
         except Exception as e:
             return {"messages": [AIMessage(content=f"❌ Failed to write document: {str(e)}")]}
 
@@ -259,19 +419,58 @@ def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Dict], r
             filename = data.get('filename')
             workflow.add_node(node_id, get_doc_writer_node(filename))
 
-    # 2. Add Edges
+    # 2. Add Edges — with proper ReAct loop for Agent ↔ Tool cycling
+    #    Before: Agent → Tool → DocWriter  (tool's raw JSON goes straight to doc writer)
+    #    After:  Agent ↔ Tool (loop), then Agent → DocWriter when done with tools
+
+    # First pass: identify agent→tool pairs and tool→next_node successors
+    agent_to_tool = {}   # agent_id -> tool_id
+    tool_successor = {}  # tool_id -> next_node_id
+
+    for edge in edges_config:
+        src = edge['source']
+        tgt = edge['target']
+        src_node = next((n for n in nodes_config if n['id'] == src), None)
+        tgt_node = next((n for n in nodes_config if n['id'] == tgt), None)
+        src_type = src_node.get('data', {}).get('backendType') if src_node else None
+        tgt_type = tgt_node.get('data', {}).get('backendType') if tgt_node else None
+
+        if src_type == 'agent' and tgt_type in ('tool', 'search', 'mcp'):
+            agent_to_tool[src] = tgt
+        if src_type in ('tool', 'search', 'mcp'):
+            tool_successor[src] = tgt
+
+    # Second pass: build edges
+    handled_tool_edges = set()  # tool→next edges replaced by the ReAct loop
+
     for edge in edges_config:
         source = edge['source']
         target = edge['target']
-        
         source_node = next((n for n in nodes_config if n['id'] == source), None)
         target_node = next((n for n in nodes_config if n['id'] == target), None)
-        
-        if source_node and source_node.get('data', {}).get('backendType') == 'agent':
-            if target_node and target_node.get('data', {}).get('backendType') in ['tool', 'search', 'mcp']:
-                workflow.add_conditional_edges(source, tools_condition, {"tools": target, END: END})
+        source_type = source_node.get('data', {}).get('backendType') if source_node else None
+        target_type = target_node.get('data', {}).get('backendType') if target_node else None
+
+        if source_type == 'agent' and target_type in ('tool', 'search', 'mcp'):
+            # --- ReAct pattern: Agent ↔ Tool, then Agent → next node ---
+            next_after_tool = tool_successor.get(target)
+            if next_after_tool:
+                workflow.add_conditional_edges(
+                    source, tools_condition, {"tools": target, END: next_after_tool}
+                )
+                handled_tool_edges.add((target, next_after_tool))
             else:
-                workflow.add_edge(source, target)
+                workflow.add_conditional_edges(
+                    source, tools_condition, {"tools": target, END: END}
+                )
+            # Loop tool results back to agent for synthesis
+            workflow.add_edge(target, source)
+            print(f"🔄 ReAct loop: {source} ↔ {target}, exit → {next_after_tool or 'END'}")
+
+        elif (source, target) in handled_tool_edges:
+            # Skip — this edge is now handled by the ReAct loop's conditional routing
+            continue
+
         else:
             workflow.add_edge(source, target)
             
@@ -285,7 +484,8 @@ def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Dict], r
     async def run_async():
         return await app.ainvoke({
             "messages": [HumanMessage(content=final_input)],
-            "metadata": {}
+            "metadata": {},
+            "attachment_path": ""
         })
 
     try:
