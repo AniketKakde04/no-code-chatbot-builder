@@ -71,11 +71,13 @@ async def get_mcp_tools(command: str, args: List[str]):
 
 def get_llm_node(system_instruction: str, user_template: str, bind_tools: bool = False, mcp_config: Dict = None):
     async def llm_node_func(state: AgentState):
+        print(">>> AGENT NODE: entered")
         messages = state['messages']
         llm = ChatGoogleGenerativeAI(
             google_api_key=os.getenv("GEMINI_API_KEY"), 
             model="gemini-2.5-flash",
-            temperature=0
+            temperature=0,
+            timeout=60,
         )
         
         all_tools = []
@@ -85,10 +87,12 @@ def get_llm_node(system_instruction: str, user_template: str, bind_tools: bool =
         if mcp_config and mcp_config.get('command'):
             cmd = mcp_config['command']
             args = mcp_config.get('args', [])
+            print(f">>> AGENT NODE: loading MCP tools from {cmd} {args}")
             mcp_tools = await get_mcp_tools(cmd, args)
             all_tools.extend(mcp_tools)
             
         if all_tools:
+            print(f">>> AGENT NODE: binding {len(all_tools)} tools")
             llm = llm.bind_tools(all_tools)
             
         today = datetime.datetime.now().strftime("%B %d, %Y")
@@ -101,7 +105,10 @@ def get_llm_node(system_instruction: str, user_template: str, bind_tools: bool =
         final_messages = [SystemMessage(content=final_system_msg)] + messages
         
         try:
+            print(f">>> AGENT NODE: calling LLM with {len(final_messages)} messages...")
             response = await llm.ainvoke(final_messages)
+            has_tool_calls = bool(getattr(response, 'tool_calls', None))
+            print(f">>> AGENT NODE: LLM responded. Has tool calls: {has_tool_calls}")
             return {"messages": [response]}
         except Exception as e:
             print(f"LLM Invocation Failed: {e}")
@@ -111,6 +118,7 @@ def get_llm_node(system_instruction: str, user_template: str, bind_tools: bool =
 
 def get_email_node(receiver_email: str):
     def email_node_func(state: AgentState):
+        print(f">>> EMAIL NODE: entered, sending to {receiver_email}")
         sender_email = os.getenv("EMAIL_USER")
         sender_password = os.getenv("EMAIL_PASS")
 
@@ -337,14 +345,18 @@ def get_doc_writer_node(filename: str):
     Parses markdown-style LLM output into properly formatted Word elements.
     """
     def doc_writer_node_func(state: AgentState):
+        print(">>> DOC WRITER NODE: entered")
         final_filename = filename if filename and filename.strip() else "agent_output.docx"
         if not final_filename.endswith(".docx"):
             final_filename += ".docx"
             
-        output_dir = "generated_docs"
+        # Use absolute path anchored to this script's directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, "generated_docs")
         os.makedirs(output_dir, exist_ok=True)
         
         file_path = os.path.join(output_dir, final_filename)
+        print(f">>> DOC WRITER NODE: writing to {file_path}")
         
         last_message = state["messages"][-1]
         content = str(last_message.content)
@@ -354,21 +366,33 @@ def get_doc_writer_node(filename: str):
             doc = DocxDocument()
             doc.add_heading('Agent Generated Report', 0)
             _parse_content_to_docx(doc, content)
-            doc.save(file_path)
+
+            # Write to a temp file first, then rename — avoids
+            # "Permission denied" when the target is open / locked.
+            import tempfile
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".docx", dir=output_dir)
+            os.close(tmp_fd)
+            doc.save(tmp_path)
+            # Replace the target file
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            shutil.move(tmp_path, file_path)
             
             abs_path = os.path.abspath(file_path)
+            print(f">>> DOC WRITER NODE: success → {abs_path}")
             return {
                 "messages": [AIMessage(content=f"✅ Word Document created: {abs_path}")],
                 "attachment_path": abs_path
                 }
         except Exception as e:
+            print(f">>> DOC WRITER NODE: FAILED → {e}")
             return {"messages": [AIMessage(content=f"❌ Failed to write document: {str(e)}")]}
 
     return doc_writer_node_func
 
 # --- 5. GRAPH BUILDER ---
 
-def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Dict], request_initial_input: str):
+async def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Dict], request_initial_input: str):
     print(f"Building workflow with {len(nodes_config)} nodes")
 
     workflow = StateGraph(AgentState)
@@ -478,21 +502,31 @@ def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Dict], r
     start_node = next((n['id'] for n in nodes_config if n.get('data', {}).get('backendType') == 'input'), None)
     if start_node: workflow.set_entry_point(start_node)
     
-    app = workflow.compile()
-    final_input = input_override if input_override.strip() else request_initial_input
-    
-    async def run_async():
-        return await app.ainvoke({
-            "messages": [HumanMessage(content=final_input)],
-            "metadata": {},
-            "attachment_path": ""
-        })
+    graph_app = workflow.compile()
+    # User's chat message takes priority; input node prompt is a fallback for test runs
+    final_input = request_initial_input if request_initial_input.strip() else input_override
+
+    print(f">>> WORKFLOW: starting execution with input: {final_input[:100]}...")
 
     try:
-        final_state = asyncio.run(run_async())
+        final_state = await asyncio.wait_for(
+            graph_app.ainvoke({
+                "messages": [HumanMessage(content=final_input)],
+                "metadata": {},
+                "attachment_path": ""
+            }),
+            timeout=180  # 3 minute timeout
+        )
+        print(f">>> WORKFLOW: execution completed successfully")
         return {
             "result": final_state["messages"][-1].content,
             "full_history": [m.content for m in final_state["messages"]]
+        }
+    except asyncio.TimeoutError:
+        print(f">>> WORKFLOW: TIMED OUT after 180s")
+        return {
+            "result": "Error: Workflow timed out after 3 minutes.",
+            "full_history": []
         }
     except Exception as e:
         print(f"Workflow execution failed: {e}")

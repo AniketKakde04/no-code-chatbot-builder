@@ -11,6 +11,7 @@ from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException, Depe
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
+import uuid
 from typing import List, Dict, Any, Optional
 from workflow_engine import build_and_run_workflow
 from supabase import create_client, Client, ClientOptions
@@ -51,8 +52,17 @@ class WorkflowRequest(BaseModel):
     initial_input: str
 
 class ChatRequest(BaseModel):
-    bot_id: str
+    bot_id: Optional[str] = None
     question: str
+
+class WorkflowSchema(BaseModel):
+    name: str
+    description: Optional[str] = None
+    nodes: List[Dict]
+    edges: List[Dict]
+
+class ShareRequest(BaseModel):
+    is_public: bool = True
 
 async def get_token(authorization: str = Header(None)):
     if not authorization:
@@ -96,6 +106,63 @@ def process_files_background(file_info: Dict[str, Any], bot_id: str, user_id: st
 @app.get("/")
 def health_check():
     return {"status": "running", "service": "BotCraft Backend"}
+
+# --- 1. WORKFLOW MANAGEMENT ENDPOINTS ---
+
+@app.post("/workflows")
+async def create_workflow(workflow: WorkflowSchema, user: dict = Depends(verify_user), token: str = Depends(get_token)):
+    user_supabase = get_auth_client(token)
+    try:
+        response = user_supabase.table("workflows").insert({
+            "user_id": user.user.id,
+            "name": workflow.name,
+            "description": workflow.description,
+            "nodes": workflow.nodes,
+            "edges": workflow.edges
+        }).execute()
+        return response.data[0]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/workflows")
+async def get_workflows(user: dict = Depends(verify_user), token: str = Depends(get_token)):
+    user_supabase = get_auth_client(token)
+    try:
+        response = user_supabase.table("workflows").select("*").eq("user_id", user.user.id).order("created_at", desc=True).execute()
+        return response.data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/workflows/{workflow_id}")
+async def update_workflow(workflow_id: str, workflow: WorkflowSchema, user: dict = Depends(verify_user), token: str = Depends(get_token)):
+    user_supabase = get_auth_client(token)
+    try:
+        response = user_supabase.table("workflows").update({
+            "name": workflow.name,
+            "description": workflow.description,
+            "nodes": workflow.nodes,
+            "edges": workflow.edges
+        }).eq("id", workflow_id).eq("user_id", user.user.id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        return response.data[0]
+    except Exception as e:
+        if "404" in str(e): raise e
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/bots/{bot_id}/link-workflow")
+async def link_workflow(bot_id: str, workflow_id: str = Form(...), user: dict = Depends(verify_user), token: str = Depends(get_token)):
+    user_supabase = get_auth_client(token)
+    # Use None if user selects "None" to reset to standard RAG
+    val = None if workflow_id in ["none", ""] else workflow_id
+    try:
+        response = user_supabase.table("bots").update({"workflow_id": val}).eq("id", bot_id).eq("user_id", user.user.id).execute()
+        return {"status": "success", "workflow_id": val}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- 2. BOT MANAGEMENT ENDPOINTS ---
 
 @app.post("/ingest")
 async def ingest_document(
@@ -178,12 +245,8 @@ async def update_bot(
     user: dict = Depends(verify_user),
     token: str = Depends(get_token)
 ):
-    """
-    Updates bot name and optionally adds/replaces knowledge sources.
-    """
     user_supabase = get_auth_client(token)
     
-    # 1. Verify ownership and Update Name
     try:
         update_data = {}
         if name:
@@ -197,14 +260,11 @@ async def update_bot(
          if "404" in str(e): raise e
          raise HTTPException(status_code=500, detail=f"Database update failed: {str(e)}")
 
-    # 2. Handle Knowledge Base Updates
     if files or urls or csvfiles or clear_history:
-        # If clear_history is requested, wipe vector store first
         if clear_history:
             print(f"Clearing knowledge base for bot {bot_id}")
             delete_bot_data(bot_id)
 
-        # Prepare new files for ingestion
         files_to_process = []
         try:
             if files:
@@ -298,6 +358,9 @@ async def delete_bot(bot_id: str, user: dict = Depends(verify_user), token: str 
     delete_bot_data(bot_id)
     return {"status": "success", "bot_id": bot_id}
 
+
+# --- 3. UPDATED CHAT ENDPOINT (THE BRAIN SWITCHER) ---
+
 @app.post("/chat")
 async def chat(request: ChatRequest):
     print(f"Received chat request for bot_id: {request.bot_id}")
@@ -306,11 +369,44 @@ async def chat(request: ChatRequest):
     if not api_key:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY not found")
     
-    answer = get_answer(request.bot_id, request.question, api_key)
-    
+    # 1. Fetch the bot to check for linked workflow
+    client = supabase_admin if supabase_admin else supabase
     try:
-        client_to_use = supabase_admin if supabase_admin else supabase
-        client_to_use.table("messages").insert([
+        bot_response = client.table("bots").select("workflow_id").eq("id", request.bot_id).single().execute()
+        if not bot_response.data:
+            raise HTTPException(status_code=404, detail="Bot not found")
+            
+        workflow_id = bot_response.data.get("workflow_id")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+    answer = ""
+
+    # 2. CHOOSE THE BRAIN
+    if workflow_id:
+        print(f"Bot {request.bot_id} routing to Workflow {workflow_id}")
+        # Fetch the nodes and edges from the workflow
+        wf_response = client.table("workflows").select("nodes, edges").eq("id", workflow_id).single().execute()
+        if wf_response.data:
+            nodes = wf_response.data['nodes']
+            edges = wf_response.data['edges']
+            
+            # Execute the LangGraph Agent Workflow
+            try:
+                result = await build_and_run_workflow(nodes, edges, request.question)
+                answer = result.get('result', "I encountered an error running the assigned workflow.")
+            except Exception as e:
+                answer = f"Agent Execution Error: {str(e)}"
+        else:
+            answer = "Error: Linked workflow not found in database."
+    else:
+        print(f"Bot {request.bot_id} routing to Standard RAG")
+        # Standard RAG Fallback
+        answer = get_answer(request.bot_id, request.question, api_key)
+    
+    # 3. Log the message
+    try:
+        client.table("messages").insert([
             {"bot_id": request.bot_id, "role": "user", "content": request.question},
             {"bot_id": request.bot_id, "role": "bot", "content": answer}
         ]).execute()
@@ -318,6 +414,9 @@ async def chat(request: ChatRequest):
         print(f"Error logging messages: {e}")
 
     return {"answer": answer}
+
+
+# --- 4. TELEGRAM ENDPOINTS ---
 
 @app.post("/bots/{bot_id}/telegram")
 async def connect_telegram(bot_id:str, token: str = Form(...), user: dict = Depends(verify_user), user_token: str = Depends(get_token)):
@@ -356,21 +455,262 @@ async def telegram_handler(bot_id: str, request: Request):
         return {"status": "error"}
         
     bot_token = response.data[0]['telegram_bot_token']
-    api_key = os.getenv("GEMINI_API_KEY")
-    ai_response = get_answer(bot_id, incoming_text, api_key)
+    
+    # Trigger the primary /chat logic to route through Agent OR RAG automatically
+    api_url = f"http://localhost:8000/chat"
+    
+    async with httpx.AsyncClient() as http_client:
+        ai_resp = await http_client.post(api_url, json={"bot_id": bot_id, "question": incoming_text})
+        ai_response_text = ai_resp.json().get("answer", "Error getting answer.")
     
     send_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": ai_response}
+    payload = {"chat_id": chat_id, "text": ai_response_text}
     
-    async with httpx.AsyncClient() as client:
-        await client.post(send_url, json=payload)
+    async with httpx.AsyncClient() as http_client:
+        await http_client.post(send_url, json=payload)
         
     return {"status": "success"}
+
+# --- 5. WHATSAPP BUSINESS API ENDPOINTS ---
+
+@app.post("/bots/{bot_id}/whatsapp")
+async def connect_whatsapp(
+    bot_id: str,
+    phone_id: str = Form(...),
+    access_token: str = Form(...),
+    user: dict = Depends(verify_user),
+    user_token: str = Depends(get_token)
+):
+    """Save WhatsApp credentials (Phone Number ID + Access Token) to the bot."""
+    user_supabase = get_auth_client(user_token)
+    try:
+        user_supabase.table("bots").update({
+            "whatsapp_phone_id": phone_id,
+            "whatsapp_access_token": access_token
+        }).eq("id", bot_id).eq("user_id", user.user.id).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save WhatsApp credentials: {str(e)}")
+    
+    return {"status": "success", "detail": "WhatsApp credentials saved. Now configure your webhook URL in the Meta dashboard."}
+
+
+@app.get("/whatsapp-webhook")
+async def whatsapp_verify(request: Request):
+    """Handle Meta's webhook verification (GET challenge-response)."""
+    params = request.query_params
+    mode = params.get("hub.mode")
+    token = params.get("hub.verify_token")
+    challenge = params.get("hub.challenge")
+    
+    verify_token = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
+    
+    if mode == "subscribe" and token == verify_token:
+        print(f"✅ WhatsApp webhook verified successfully")
+        return int(challenge)
+    else:
+        print(f"❌ WhatsApp webhook verification failed. Expected '{verify_token}', got '{token}'")
+        raise HTTPException(status_code=403, detail="Verification failed")
+
+
+@app.post("/whatsapp-webhook")
+async def whatsapp_handler(request: Request):
+    """Receive incoming WhatsApp messages and respond via Cloud API."""
+    body = await request.json()
+    
+    try:
+        entry = body.get("entry", [{}])[0]
+        changes = entry.get("changes", [{}])[0]
+        value = changes.get("value", {})
+        
+        # Get the phone number ID this message was sent TO (our business number)
+        metadata = value.get("metadata", {})
+        phone_number_id = metadata.get("phone_number_id", "")
+        
+        messages = value.get("messages", [])
+        if not messages:
+            return {"status": "no_messages"}
+        
+        msg = messages[0]
+        
+        # Only handle text messages
+        if msg.get("type") != "text":
+            return {"status": "ignored", "reason": "not_text"}
+        
+        sender_phone = msg["from"]  # Sender's phone number
+        incoming_text = msg["text"]["body"]
+        
+        print(f"📱 WhatsApp message from {sender_phone}: {incoming_text}")
+        
+        # Look up which bot is connected to this phone_number_id
+        client = supabase_admin if supabase_admin else supabase
+        bot_resp = client.table("bots").select("id, whatsapp_access_token").eq("whatsapp_phone_id", phone_number_id).execute()
+        
+        if not bot_resp.data:
+            print(f"❌ No bot found for WhatsApp phone_id: {phone_number_id}")
+            return {"status": "error", "detail": "No bot connected to this number"}
+        
+        bot_id = bot_resp.data[0]["id"]
+        wa_access_token = bot_resp.data[0]["whatsapp_access_token"]
+        
+        # Route through the existing /chat logic
+        async with httpx.AsyncClient(timeout=120.0) as http_client:
+            ai_resp = await http_client.post(
+                "http://localhost:8000/chat",
+                json={"bot_id": bot_id, "question": incoming_text}
+            )
+            ai_response_text = ai_resp.json().get("answer", "Sorry, I couldn't process that.")
+        
+        # Send reply via WhatsApp Cloud API
+        send_url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
+        headers = {
+            "Authorization": f"Bearer {wa_access_token}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": sender_phone,
+            "type": "text",
+            "text": {"body": ai_response_text}
+        }
+        
+        async with httpx.AsyncClient() as http_client:
+            send_resp = await http_client.post(send_url, json=payload, headers=headers)
+            if send_resp.status_code != 200:
+                print(f"❌ WhatsApp send error: {send_resp.text}")
+            else:
+                print(f"✅ WhatsApp reply sent to {sender_phone}")
+        
+        return {"status": "success"}
+        
+    except Exception as e:
+        print(f"❌ WhatsApp webhook error: {str(e)}")
+        return {"status": "error"}
+
+
+# --- 6. CHAT MESSAGES & SHARING ENDPOINTS ---
+
+@app.get("/bots/{bot_id}/messages")
+async def get_messages(bot_id: str, user: dict = Depends(verify_user), token: str = Depends(get_token)):
+    """Fetch chat history for a bot."""
+    user_supabase = get_auth_client(token)
+    try:
+        # Verify user owns this bot
+        bot_check = user_supabase.table("bots").select("id").eq("id", bot_id).eq("user_id", user.user.id).execute()
+        if not bot_check.data:
+            raise HTTPException(status_code=404, detail="Bot not found")
+        
+        client = supabase_admin if supabase_admin else user_supabase
+        response = client.table("messages").select("*").eq("bot_id", bot_id).order("created_at", desc=False).execute()
+        return response.data
+    except Exception as e:
+        if "404" in str(e): raise e
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/bots/{bot_id}/messages")
+async def clear_messages(bot_id: str, user: dict = Depends(verify_user), token: str = Depends(get_token)):
+    """Clear chat history for a bot."""
+    user_supabase = get_auth_client(token)
+    try:
+        bot_check = user_supabase.table("bots").select("id").eq("id", bot_id).eq("user_id", user.user.id).execute()
+        if not bot_check.data:
+            raise HTTPException(status_code=404, detail="Bot not found")
+        
+        client = supabase_admin if supabase_admin else user_supabase
+        client.table("messages").delete().eq("bot_id", bot_id).execute()
+        return {"status": "success"}
+    except Exception as e:
+        if "404" in str(e): raise e
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/bots/{bot_id}/share")
+async def toggle_share(bot_id: str, body: ShareRequest, user: dict = Depends(verify_user), token: str = Depends(get_token)):
+    """Toggle public sharing for a bot. Returns the share URL."""
+    user_supabase = get_auth_client(token)
+    try:
+        # Get current bot
+        bot_resp = user_supabase.table("bots").select("share_id, is_public").eq("id", bot_id).eq("user_id", user.user.id).single().execute()
+        if not bot_resp.data:
+            raise HTTPException(status_code=404, detail="Bot not found")
+        
+        update_data = {"is_public": body.is_public}
+        # Generate share_id if it doesn't exist yet
+        share_id = bot_resp.data.get("share_id")
+        if not share_id and body.is_public:
+            share_id = str(uuid.uuid4())
+            update_data["share_id"] = share_id
+        
+        user_supabase.table("bots").update(update_data).eq("id", bot_id).execute()
+        
+        return {
+            "status": "success",
+            "is_public": body.is_public,
+            "share_id": share_id if body.is_public else None
+        }
+    except Exception as e:
+        if "404" in str(e): raise e
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/public/bot/{share_id}")
+async def get_public_bot(share_id: str):
+    """Get public bot info by share link (no auth required)."""
+    client = supabase_admin if supabase_admin else supabase
+    try:
+        response = client.table("bots").select("id, name, is_public").eq("share_id", share_id).eq("is_public", True).single().execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Bot not found or not public")
+        return {"bot_id": response.data["id"], "name": response.data["name"]}
+    except Exception as e:
+        if "404" in str(e): raise e
+        raise HTTPException(status_code=404, detail="Bot not found or not public")
+
+@app.post("/public/chat/{share_id}")
+async def public_chat(share_id: str, request: ChatRequest):
+    """Chat with a shared bot (no auth required)."""
+    client = supabase_admin if supabase_admin else supabase
+    try:
+        bot_resp = client.table("bots").select("id, workflow_id, is_public").eq("share_id", share_id).eq("is_public", True).single().execute()
+        if not bot_resp.data:
+            raise HTTPException(status_code=404, detail="Bot not found or not public")
+    except Exception as e:
+        raise HTTPException(status_code=404, detail="Bot not found or not public")
+    
+    bot_id = bot_resp.data["id"]
+    workflow_id = bot_resp.data.get("workflow_id")
+    api_key = os.getenv("GEMINI_API_KEY")
+    
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not found")
+    
+    answer = ""
+    if workflow_id:
+        wf_response = client.table("workflows").select("nodes, edges").eq("id", workflow_id).single().execute()
+        if wf_response.data:
+            try:
+                result = await build_and_run_workflow(wf_response.data['nodes'], wf_response.data['edges'], request.question)
+                answer = result.get('result', "Error running workflow.")
+            except Exception as e:
+                answer = f"Agent Error: {str(e)}"
+        else:
+            answer = "Error: Linked workflow not found."
+    else:
+        answer = get_answer(bot_id, request.question, api_key)
+    
+    # Log messages
+    try:
+        client.table("messages").insert([
+            {"bot_id": bot_id, "role": "user", "content": request.question},
+            {"bot_id": bot_id, "role": "bot", "content": answer}
+        ]).execute()
+    except Exception as e:
+        print(f"Error logging messages: {e}")
+    
+    return {"answer": answer}
+
 
 @app.post("/execute-workflow")
 async def execute_workflow(request: WorkflowRequest):
     try:
-        result = build_and_run_workflow(request.nodes, request.edges, request.initial_input)
+        result = await build_and_run_workflow(request.nodes, request.edges, request.initial_input)
         return {
             "status": "success", 
             "result": result.get('result', 'No result'), 

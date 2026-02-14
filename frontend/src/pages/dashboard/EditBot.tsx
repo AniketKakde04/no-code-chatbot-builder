@@ -1,259 +1,253 @@
-import React, { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { ArrowLeft, Save, Upload, FileText, Globe, AlertTriangle, X, Plus } from 'lucide-react';
-import { api } from '@/services/api';
+import React, { useState, useEffect } from 'react';
+import { useParams, Link } from 'react-router-dom';
+import { ArrowLeft, BrainCircuit, Database, Loader2, Upload, Link as LinkIcon, FileText } from 'lucide-react';
+import { getWorkflows, linkWorkflowToBot } from '@/services/api'; 
+import { supabase } from '@/lib/supabase';
 
-export function EditBot() {
-  const { botId } = useParams<{ botId: string }>();
-  const navigate = useNavigate();
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  
-  // Form State
-  const [name, setName] = useState('');
-  const [clearHistory, setClearHistory] = useState(false);
-  
-  // Data States
-  const [files, setFiles] = useState<File[]>([]);
-  const [csvFiles, setCsvFiles] = useState<File[]>([]);
-  const [urls, setUrls] = useState<string[]>([]);
-  const [currentUrl, setCurrentUrl] = useState('');
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
-  useEffect(() => {
-    async function fetchBot() {
-      try {
-        if (!botId) return;
-        const data = await api.getBot(botId);
-        setName(data.name);
-      } catch (error) {
-        console.error("Error fetching bot:", error);
-        alert("Failed to load bot details.");
-        navigate('/dashboard');
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchBot();
-  }, [botId, navigate]);
-
-  const handleAddUrl = () => {
-    if (currentUrl && !urls.includes(currentUrl)) {
-      setUrls([...urls, currentUrl]);
-      setCurrentUrl('');
-    }
-  };
-
-  const removeUrl = (urlToRemove: string) => {
-    setUrls(urls.filter(url => url !== urlToRemove));
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'pdf' | 'csv') => {
-    if (e.target.files) {
-      const newFiles = Array.from(e.target.files);
-      if (type === 'pdf') {
-        setFiles(prev => [...prev, ...newFiles]);
-      } else {
-        setCsvFiles(prev => [...prev, ...newFiles]);
-      }
-    }
-  };
-
-  const removeFile = (index: number, type: 'pdf' | 'csv') => {
-    if (type === 'pdf') {
-      setFiles(files.filter((_, i) => i !== index));
-    } else {
-      setCsvFiles(csvFiles.filter((_, i) => i !== index));
-    }
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!botId) return;
+export const EditBot = () => {
+    const { botId } = useParams();
     
-    setSaving(true);
-    try {
-      const formData = new FormData();
-      formData.append('name', name);
-      
-      files.forEach(file => formData.append('files', file));
-      csvFiles.forEach(file => formData.append('csvfiles', file));
-      urls.forEach(url => formData.append('urls', url));
-      
-      formData.append('clear_history', clearHistory.toString());
+    // --- State: Brain & Workflows ---
+    const [workflows, setWorkflows] = useState<any[]>([]);
+    const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>("none");
+    const [isSavingWorkflow, setIsSavingWorkflow] = useState(false);
 
-      await api.updateBot(botId, formData);
-      navigate('/dashboard');
-    } catch (error) {
-      console.error(error);
-      alert('Failed to update bot. Please try again.');
-    } finally {
-      setSaving(false);
-    }
-  };
+    // --- State: Knowledge Base Update ---
+    const [botName, setBotName] = useState("");
+    const [files, setFiles] = useState<File[]>([]);
+    const [csvFiles, setCsvFiles] = useState<File[]>([]);
+    const [urls, setUrls] = useState("");
+    const [clearHistory, setClearHistory] = useState(false);
+    const [isUpdatingKb, setIsUpdatingKb] = useState(false);
 
-  if (loading) {
-    return <div className="p-8 text-white">Loading...</div>;
-  }
+    useEffect(() => {
+        const fetchData = async () => {
+            try {
+                // Fetch Workflows for the dropdown
+                const wfs = await getWorkflows();
+                setWorkflows(wfs);
+                
+                // Fetch current Bot details
+                const { data: { session } } = await supabase.auth.getSession();
+                const token = session?.access_token;
+                
+                if (botId && token) {
+                    const res = await fetch(`${API_URL}/bots/${botId}`, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    if (res.ok) {
+                        const botData = await res.json();
+                        setBotName(botData.name || "");
+                        setSelectedWorkflowId(botData.workflow_id || "none");
+                    }
+                }
+            } catch (error) {
+                console.error("Failed to load data:", error);
+            }
+        };
+        fetchData();
+    }, [botId]);
 
-  return (
-    <div className="p-8 max-w-4xl mx-auto space-y-8">
-      <div className="flex items-center gap-4">
-        <button 
-          onClick={() => navigate('/dashboard')}
-          className="p-2 hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-white"
-        >
-          <ArrowLeft className="w-6 h-6" />
-        </button>
-        <div>
-          <h1 className="text-3xl font-bold text-white">Edit Bot</h1>
-          <p className="text-slate-400">Update your chatbot's settings and knowledge.</p>
-        </div>
-      </div>
+    // --- Handlers ---
+    const handleLinkWorkflow = async () => {
+        if (!botId) return;
+        setIsSavingWorkflow(true);
+        try {
+            await linkWorkflowToBot(botId, selectedWorkflowId);
+            alert("Brain connected successfully!");
+        } catch (error) {
+            console.error(error);
+            alert("Failed to connect workflow.");
+        } finally {
+            setIsSavingWorkflow(false);
+        }
+    };
 
-      <motion.form 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        onSubmit={handleSubmit}
-        className="space-y-6"
-      >
-        {/* Name Section */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-          <label className="block text-sm font-medium text-slate-300 mb-2">
-            Bot Name
-          </label>
-          <input
-            type="text"
-            required
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
-            placeholder="e.g., Customer Support Agent"
-          />
-        </div>
+    const handleUpdateKnowledgeBase = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!botId) return;
+        
+        setIsUpdatingKb(true);
+        try {
+            const { data: { session } } = await supabase.auth.getSession();
+            const token = session?.access_token;
+            
+            const formData = new FormData();
+            if (botName) formData.append('name', botName);
+            files.forEach(f => formData.append('files', f));
+            csvFiles.forEach(f => formData.append('csvfiles', f));
+            
+            const urlArray = urls.split(',').map(u => u.trim()).filter(u => u);
+            urlArray.forEach(u => formData.append('urls', u));
+            
+            formData.append('clear_history', clearHistory.toString());
 
-        {/* Knowledge Base Section */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-          <h2 className="text-xl font-semibold text-white mb-4">Update Knowledge Base</h2>
-          
-          <div className="flex items-start gap-4 mb-6 p-4 bg-amber-500/10 border border-amber-500/20 rounded-lg">
-            <AlertTriangle className="w-5 h-5 text-amber-500 mt-0.5" />
-            <div className="space-y-2">
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input 
-                  type="checkbox" 
-                  checked={clearHistory}
-                  onChange={(e) => setClearHistory(e.target.checked)}
-                  className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-slate-900" 
-                />
-                <span className="text-sm font-medium text-slate-200">
-                  Reset existing knowledge?
-                </span>
-              </label>
-              <p className="text-xs text-slate-400">
-                If checked, all previous documents will be deleted before adding the new ones.
-                Leave unchecked to append new knowledge to the existing bot.
-              </p>
-            </div>
-          </div>
+            const res = await fetch(`${API_URL}/bots/${botId}`, {
+                method: 'PATCH',
+                headers: { 'Authorization': `Bearer ${token}` },
+                body: formData
+            });
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              
-            {/* PDF Upload */}
-            <div className="space-y-3">
-              <label className="block text-sm font-medium text-slate-300">Add PDFs</label>
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 text-center hover:border-indigo-500 transition-colors">
-                <input
-                  type="file"
-                  accept=".pdf"
-                  multiple
-                  onChange={(e) => handleFileChange(e, 'pdf')}
-                  className="hidden"
-                  id="pdf-edit-upload"
-                />
-                <label htmlFor="pdf-edit-upload" className="cursor-pointer flex flex-col items-center gap-2">
-                  <Upload className="w-6 h-6 text-indigo-500" />
-                  <span className="text-xs text-slate-400">Click to upload</span>
-                </label>
-              </div>
-              {files.map((f, i) => (
-                <div key={i} className="flex justify-between items-center bg-slate-800 p-2 rounded text-xs text-white">
-                  <span className="truncate max-w-[150px]">{f.name}</span>
-                  <button type="button" onClick={() => removeFile(i, 'pdf')}><X className="w-3 h-3 text-slate-400" /></button>
+            if (!res.ok) throw new Error("Failed to update bot");
+            
+            alert("Bot updated successfully! New sources are processing in the background.");
+            setFiles([]);
+            setCsvFiles([]);
+            setUrls("");
+            setClearHistory(false);
+        } catch (error) {
+            console.error(error);
+            alert("Failed to update knowledge base.");
+        } finally {
+            setIsUpdatingKb(false);
+        }
+    };
+
+    return (
+        <div className="max-w-4xl mx-auto space-y-8 pb-12">
+            {/* Header */}
+            <div className="flex items-center gap-4">
+                <Link to="/dashboard" className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 transition-colors">
+                    <ArrowLeft className="w-5 h-5" />
+                </Link>
+                <div>
+                    <h1 className="text-3xl font-bold text-white">Bot Settings</h1>
+                    <p className="text-slate-400">Configure your bot's brain and knowledge</p>
                 </div>
-              ))}
             </div>
 
-            {/* CSV Upload */}
-            <div className="space-y-3">
-              <label className="block text-sm font-medium text-slate-300">Add CSVs</label>
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 text-center hover:border-emerald-500 transition-colors">
-                <input
-                  type="file"
-                  accept=".csv"
-                  multiple
-                  onChange={(e) => handleFileChange(e, 'csv')}
-                  className="hidden"
-                  id="csv-edit-upload"
-                />
-                <label htmlFor="csv-edit-upload" className="cursor-pointer flex flex-col items-center gap-2">
-                  <FileText className="w-6 h-6 text-emerald-500" />
-                  <span className="text-xs text-slate-400">Click to upload</span>
-                </label>
-              </div>
-              {csvFiles.map((f, i) => (
-                <div key={i} className="flex justify-between items-center bg-slate-800 p-2 rounded text-xs text-white">
-                  <span className="truncate max-w-[150px]">{f.name}</span>
-                  <button type="button" onClick={() => removeFile(i, 'csv')}><X className="w-3 h-3 text-slate-400" /></button>
+            <div className="grid grid-cols-1 gap-8">
+                
+                {/* --- THE BRAIN SETTINGS (AGENT WORKFLOW) --- */}
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4 shadow-sm">
+                    <div className="flex items-center gap-3 border-b border-slate-800 pb-4 mb-4">
+                        <BrainCircuit className="w-6 h-6 text-indigo-400" />
+                        <h2 className="text-xl font-semibold text-white">Agent Workflow (The Brain)</h2>
+                    </div>
+                    
+                    <p className="text-sm text-slate-400">
+                        Choose how this bot thinks. "Standard RAG" will answer questions from uploaded files. 
+                        Selecting an Agent Workflow allows the bot to perform complex actions via LangGraph.
+                    </p>
+
+                    <div className="flex items-end gap-4 mt-4">
+                        <div className="flex-1">
+                            <label className="block text-sm font-medium text-slate-300 mb-2">Connect Agent Workflow</label>
+                            <select 
+                                value={selectedWorkflowId}
+                                onChange={(e) => setSelectedWorkflowId(e.target.value)}
+                                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:ring-2 focus:ring-indigo-500 outline-none appearance-none"
+                            >
+                                <option value="none">Standard RAG (Answer from Documents)</option>
+                                {workflows.map(wf => (
+                                    <option key={wf.id} value={wf.id}>
+                                        {wf.name}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        
+                        <button 
+                            onClick={handleLinkWorkflow}
+                            disabled={isSavingWorkflow}
+                            className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 rounded-lg text-sm font-medium text-white transition-colors"
+                        >
+                            {isSavingWorkflow ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Apply Brain'}
+                        </button>
+                    </div>
                 </div>
-              ))}
-            </div>
 
-            {/* URL Input */}
-            <div className="space-y-3">
-              <label className="block text-sm font-medium text-slate-300">Add URLs</label>
-              <div className="flex gap-2">
-                <input
-                  type="url"
-                  value={currentUrl}
-                  onChange={(e) => setCurrentUrl(e.target.value)}
-                  placeholder="https://"
-                  className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2 py-2 text-xs text-white"
-                  onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddUrl())}
-                />
-                <button type="button" onClick={handleAddUrl} className="bg-slate-800 text-white p-2 rounded-lg">
-                  <Plus className="w-4 h-4" />
-                </button>
-              </div>
-              {urls.map((url, i) => (
-                <div key={i} className="flex justify-between items-center bg-slate-800 p-2 rounded text-xs text-white">
-                  <span className="truncate max-w-[150px]">{url}</span>
-                  <button type="button" onClick={() => removeUrl(url)}><X className="w-3 h-3 text-slate-400" /></button>
+                {/* --- RAG KNOWLEDGE BASE UPLOADS --- */}
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-sm">
+                    <div className="flex items-center gap-3 border-b border-slate-800 pb-4 mb-6">
+                        <Database className="w-6 h-6 text-emerald-400" />
+                        <h2 className="text-xl font-semibold text-white">Knowledge Base Updates</h2>
+                    </div>
+                    
+                    <form onSubmit={handleUpdateKnowledgeBase} className="space-y-6">
+                        <div>
+                            <label className="block text-sm font-medium text-slate-300 mb-2">Bot Name</label>
+                            <input 
+                                type="text"
+                                value={botName}
+                                onChange={(e) => setBotName(e.target.value)}
+                                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-2 text-white focus:border-emerald-500 outline-none"
+                            />
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {/* PDFs */}
+                            <div className="p-4 border border-slate-800 border-dashed rounded-lg bg-slate-950/50">
+                                <label className="block text-sm font-medium text-slate-300 mb-2 flex items-center gap-2">
+                                    <FileText className="w-4 h-4 text-rose-400" /> Upload PDFs
+                                </label>
+                                <input 
+                                    type="file" 
+                                    multiple 
+                                    accept=".pdf"
+                                    onChange={(e) => setFiles(Array.from(e.target.files || []))}
+                                    className="text-sm text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-rose-500/10 file:text-rose-400 hover:file:bg-rose-500/20"
+                                />
+                            </div>
+
+                            {/* CSVs */}
+                            <div className="p-4 border border-slate-800 border-dashed rounded-lg bg-slate-950/50">
+                                <label className="block text-sm font-medium text-slate-300 mb-2 flex items-center gap-2">
+                                    <Database className="w-4 h-4 text-blue-400" /> Upload CSVs
+                                </label>
+                                <input 
+                                    type="file" 
+                                    multiple 
+                                    accept=".csv"
+                                    onChange={(e) => setCsvFiles(Array.from(e.target.files || []))}
+                                    className="text-sm text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-500/10 file:text-blue-400 hover:file:bg-blue-500/20"
+                                />
+                            </div>
+                        </div>
+
+                        {/* URLs */}
+                        <div>
+                            <label className="block text-sm font-medium text-slate-300 mb-2 flex items-center gap-2">
+                                <LinkIcon className="w-4 h-4 text-emerald-400" /> Scrape URLs (comma separated)
+                            </label>
+                            <textarea 
+                                value={urls}
+                                onChange={(e) => setUrls(e.target.value)}
+                                placeholder="https://example.com, https://docs.example.com"
+                                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-white focus:border-emerald-500 outline-none h-24 resize-none"
+                            />
+                        </div>
+
+                        {/* Clear History Toggle */}
+                        <div className="flex items-center gap-3 p-4 bg-red-500/10 border border-red-500/20 rounded-lg">
+                            <input 
+                                type="checkbox" 
+                                id="clearHistory"
+                                checked={clearHistory}
+                                onChange={(e) => setClearHistory(e.target.checked)}
+                                className="w-4 h-4 rounded border-slate-700 text-red-500 focus:ring-red-500 focus:ring-offset-slate-900 bg-slate-950"
+                            />
+                            <label htmlFor="clearHistory" className="text-sm font-medium text-red-400 cursor-pointer">
+                                Clear existing knowledge base before uploading new files
+                            </label>
+                        </div>
+
+                        <div className="pt-4 border-t border-slate-800 flex justify-end">
+                            <button 
+                                type="submit"
+                                disabled={isUpdatingKb}
+                                className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 rounded-lg text-sm font-medium text-white transition-colors"
+                            >
+                                {isUpdatingKb ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                                Update Knowledge Base
+                            </button>
+                        </div>
+                    </form>
                 </div>
-              ))}
+
             </div>
-
-          </div>
         </div>
-
-        <div className="flex justify-end gap-4">
-          <button
-            type="button"
-            onClick={() => navigate('/dashboard')}
-            className="px-6 py-3 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={saving}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-lg font-medium transition-all shadow-lg shadow-indigo-500/25 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-          >
-            <Save className="w-5 h-5" />
-            {saving ? 'Saving...' : 'Save Changes'}
-          </button>
-        </div>
-      </motion.form>
-    </div>
-  );
-}
+    );
+};

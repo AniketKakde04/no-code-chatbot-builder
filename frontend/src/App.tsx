@@ -9,8 +9,11 @@ import { CreateBot } from '@/pages/dashboard/CreateBot';
 import { EditBot } from '@/pages/dashboard/EditBot';
 import { EmbedBot } from '@/pages/dashboard/EmbedBot';
 import { AgentBuilder } from '@/pages/agent-builder/AgentBuilder';
+import { ChatPage } from '@/pages/chat/ChatPage';
+import { PublicChat } from '@/pages/chat/PublicChat';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 import { TelegramIntegration } from '@/pages/dashboard/TelegramIntegration';
+import { WhatsAppIntegration } from '@/pages/dashboard/WhatsAppIntegration';
 
 function App() {
   return (
@@ -33,7 +36,9 @@ function App() {
             <Route path="/create-bot" element={<CreateBot />} />
             <Route path="/edit-bot/:botId" element={<EditBot />} />
             <Route path="/embed/:botId" element={<EmbedBot />} />
+            <Route path="/chat/:botId" element={<ChatPage />} />
             <Route path="/bot/:botId/telegram" element={<TelegramIntegration />} />
+            <Route path="/bot/:botId/whatsapp" element={<WhatsAppIntegration />} />
           </Route>
 
           {/* Standalone Builder Route (NO Sidebar - Full Screen) */}
@@ -42,6 +47,14 @@ function App() {
               <AgentBuilder />
             </ProtectedRoute>
           } />
+          <Route path="/agent-builder/:workflowId" element={
+            <ProtectedRoute>
+              <AgentBuilder />
+            </ProtectedRoute>
+          } />
+
+          {/* Public Share Route (NO auth, NO sidebar) */}
+          <Route path="/s/:shareId" element={<PublicChat />} />
 
           {/* Default Redirect */}
           <Route path="/" element={<Navigate to="/dashboard" replace />} />

@@ -1,92 +1,191 @@
-import React, { useState, useCallback } from 'react';
-import { Link } from 'react-router-dom';
-import { 
-    ReactFlow, 
-    Background, 
-    Controls, 
-    MiniMap, 
-    addEdge, 
-    useNodesState, 
-    useEdgesState, 
-    Connection, 
-    Edge, 
+import React, { useState, useCallback, useEffect } from 'react';
+import { Link, useParams } from 'react-router-dom';
+import {
+    ReactFlow,
+    Background,
+    Controls,
+    MiniMap,
+    addEdge,
+    useNodesState,
+    useEdgesState,
+    Connection,
+    Edge,
     Node,
     applyNodeChanges,
     NodeChange
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { 
+import {
     ArrowLeft, Play, Search, Mail, Bot, Loader2, X, Settings, Trash2, Database,
-    Server, MessageSquare, Sparkles, PanelLeftClose, PanelLeftOpen, BookOpen, FileText
+    Server, MessageSquare, Sparkles, PanelLeftClose, PanelLeftOpen, BookOpen, FileText, Save, BrainCircuit
 } from 'lucide-react';
 
+import { supabase } from '@/lib/supabase'; // Import supabase directly for auth
+import { api } from '@/services/api';
+
 const initialNodes: Node[] = [
-    { 
-        id: '1', 
-        position: { x: 50, y: 250 }, 
-        data: { label: 'Start', backendType: 'input', userPrompt: 'Find me the latest AI news.' }, 
+    {
+        id: '1',
+        position: { x: 50, y: 250 },
+        data: { label: 'Start', backendType: 'input', userPrompt: 'Find me the latest AI news.' },
         type: 'input',
         style: { background: '#10b981', color: 'white', border: 'none', width: 160, padding: '10px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold' }
     },
-    { 
-        id: '2', 
-        position: { x: 300, y: 250 }, 
-        data: { label: 'Researcher', backendType: 'agent', systemInstruction: 'You are a helpful assistant.' }, 
+    {
+        id: '2',
+        position: { x: 300, y: 250 },
+        data: { label: 'AI Agent', backendType: 'agent', systemInstruction: 'You are an AI assistant.' },
         type: 'default',
-        style: { background: '#6366f1', color: 'white', border: 'none', width: 200, padding: '10px', borderRadius: '8px', textAlign: 'center' }
-    },
+        style: { background: '#4f46e5', color: 'white', border: 'none', width: 160, padding: '10px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold' }
+    }
 ];
 
 const initialEdges: Edge[] = [
-    { id: 'e1-2', source: '1', target: '2', animated: true, style: { stroke: '#fff' } }
+    { id: 'e1-2', source: '1', target: '2', animated: true, style: { stroke: '#4f46e5', strokeWidth: 2 } }
 ];
 
+let id = 3;
+const getId = () => `${id++}`;
+
 export const AgentBuilder = () => {
-    // State
+    const { workflowId } = useParams<{ workflowId?: string }>();
     const [nodes, setNodes] = useNodesState(initialNodes);
-    const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
-    const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-    const [isRunning, setIsRunning] = useState(false);
+    const [edges, setEdges] = useEdgesState(initialEdges);
+    const [reactFlowInstance, setReactFlowInstance] = useState<any>(null);
+    const [selectedNode, setSelectedNode] = useState<Node | null>(null);
+
+    // Run / Generate State
     const [isGenerating, setIsGenerating] = useState(false);
-    const [result, setResult] = useState<any | null>(null);
+    const [result, setResult] = useState<any>(null);
+
+    // Layout Toggles
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+    const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+    // Magic Modal
     const [showMagicModal, setShowMagicModal] = useState(false);
     const [magicPrompt, setMagicPrompt] = useState("");
 
-    // --- MAGIC BUILD ---
-    const handleMagicBuild = async () => {
-        if (!magicPrompt.trim()) return;
-        setIsGenerating(true);
-        try {
-            const response = await fetch('http://localhost:8000/generate-workflow', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt: magicPrompt })
+    // Save Workflow Modal State
+    const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
+    const [workflowName, setWorkflowName] = useState('');
+    const [workflowDesc, setWorkflowDesc] = useState('');
+    const [isSavingWorkflow, setIsSavingWorkflow] = useState(false);
+    const [editingWorkflowId, setEditingWorkflowId] = useState<string | null>(null);
+    const [loadingWorkflow, setLoadingWorkflow] = useState(false);
+
+    // Load existing workflow when editing
+    useEffect(() => {
+        if (workflowId) {
+            setLoadingWorkflow(true);
+            api.getWorkflows().then((workflows) => {
+                const wf = workflows.find((w: any) => w.id === workflowId);
+                if (wf) {
+                    setNodes(wf.nodes || initialNodes);
+                    setEdges(wf.edges || initialEdges);
+                    setWorkflowName(wf.name || '');
+                    setWorkflowDesc(wf.description || '');
+                    setEditingWorkflowId(wf.id);
+                    // Update the id counter to avoid collisions
+                    const maxId = Math.max(...(wf.nodes || []).map((n: any) => parseInt(n.id) || 0), id);
+                    id = maxId + 1;
+                }
+            }).catch((err) => {
+                console.error('Failed to load workflow:', err);
+            }).finally(() => {
+                setLoadingWorkflow(false);
             });
-            const data = await response.json();
-            if (data.status === 'success') {
-                setNodes(data.data.nodes.map((n: any) => ({
-                    ...n,
-                    type: n.data.backendType === 'input' ? 'input' : 'default',
-                    style: getStyleForType(n.data.backendType)
-                })));
-                setEdges(data.data.edges.map((e: any) => ({ ...e, animated: true, style: { stroke: '#fff' } })));
-                setShowMagicModal(false);
-                setMagicPrompt("");
-            }
-        } catch (e) { alert("Magic Build failed"); } 
-        finally { setIsGenerating(false); }
+        }
+    }, [workflowId]);
+
+
+    const onNodesChange = useCallback((changes: NodeChange[]) => {
+        setNodes((nds) => applyNodeChanges(changes, nds));
+    }, [setNodes]);
+
+    const onConnect = useCallback((params: Connection | Edge) => {
+        setEdges((eds) => addEdge({ ...params, animated: true, style: { stroke: '#4f46e5', strokeWidth: 2 } }, eds));
+    }, [setEdges]);
+
+    const onDragStart = (event: React.DragEvent, nodeType: string, label: string, color: string, backendType: string) => {
+        event.dataTransfer.setData('application/reactflow', nodeType);
+        event.dataTransfer.setData('application/label', label);
+        event.dataTransfer.setData('application/color', color);
+        event.dataTransfer.setData('application/backendType', backendType);
+        event.dataTransfer.effectAllowed = 'move';
     };
 
-    // --- EXECUTE ---
-    const runAgent = async () => {
-        setIsRunning(true);
+    const onDrop = useCallback(
+        (event: React.DragEvent) => {
+            event.preventDefault();
+            const type = event.dataTransfer.getData('application/reactflow');
+            const label = event.dataTransfer.getData('application/label');
+            const color = event.dataTransfer.getData('application/color');
+            const backendType = event.dataTransfer.getData('application/backendType');
+
+            if (!type || !reactFlowInstance) return;
+
+            const position = reactFlowInstance.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+
+            // Fix: Create all nodes as 'default' so they have both input and output handles, 
+            // except for the 'input' trigger which should only have output.
+            let nodeType = 'default';
+            if (backendType === 'input') nodeType = 'input';
+
+            const newNode: Node = {
+                id: getId(),
+                type: nodeType,
+                position,
+                data: { label, backendType },
+                style: { background: color, color: 'white', border: 'none', width: 160, padding: '10px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold' }
+            };
+
+            setNodes((nds) => nds.concat(newNode));
+        },
+        [reactFlowInstance, setNodes],
+    );
+
+    const onDragOver = useCallback((event: React.DragEvent) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+    }, []);
+
+    const onNodeClick = (_: React.MouseEvent, node: Node) => {
+        setSelectedNode(node);
+        setIsSettingsOpen(true);
+    };
+
+    const updateNodeData = (key: string, value: string) => {
+        if (!selectedNode) return;
+        setNodes((nds) =>
+            nds.map((node) => {
+                if (node.id === selectedNode.id) {
+                    return { ...node, data: { ...node.data, [key]: value } };
+                }
+                return node;
+            })
+        );
+        setSelectedNode({ ...selectedNode, data: { ...selectedNode.data, [key]: value } });
+    };
+
+    const handleDeleteNode = () => {
+        if (!selectedNode) return;
+        setNodes((nds) => nds.filter((n) => n.id !== selectedNode.id));
+        setEdges((eds) => eds.filter((e) => e.source !== selectedNode.id && e.target !== selectedNode.id));
+        setSelectedNode(null);
+        setIsSettingsOpen(false);
+    };
+
+    const handleRunWorkflow = async () => {
+        setIsGenerating(true);
         setResult(null);
+
         const payload = {
-            nodes: nodes.map(n => ({ id: n.id, type: n.type, data: n.data })),
+            nodes: nodes.map(n => ({ id: n.id, data: n.data })),
             edges: edges.map(e => ({ source: e.source, target: e.target })),
-            initial_input: "" 
+            initial_input: nodes.find(n => n.data.backendType === 'input')?.data.userPrompt || "Start"
         };
+
         try {
             const res = await fetch('http://localhost:8000/execute-workflow', {
                 method: 'POST',
@@ -95,127 +194,217 @@ export const AgentBuilder = () => {
             });
             const data = await res.json();
             setResult(data);
-        } catch (e) { setResult({ result: "Error running workflow" }); } 
-        finally { setIsRunning(false); }
-    };
-
-    // --- HELPERS ---
-    const onNodesChange = useCallback((c: NodeChange[]) => setNodes((ns) => applyNodeChanges(c, ns)), [setNodes]);
-    const onConnect = useCallback((p: Connection | Edge) => setEdges((es) => addEdge({ ...p, animated: true, style: { stroke: '#fff' } }, es)), [setEdges]);
-    const updateNodeData = (k: string, v: string) => setNodes((ns) => ns.map((n) => n.id === selectedNodeId ? { ...n, data: { ...n.data, [k]: v } } : n));
-    const deleteSelectedNode = () => { setNodes((ns) => ns.filter((n) => n.id !== selectedNodeId)); setSelectedNodeId(null); };
-
-    const getStyleForType = (type: string) => {
-        const base = { color: 'white', border: 'none', padding: '10px', borderRadius: '8px', textAlign: 'center', minWidth: '150px' };
-        switch(type) {
-            case 'input': return { ...base, background: '#10b981' };
-            case 'agent': return { ...base, background: '#6366f1' };
-            case 'tool': return { ...base, background: '#f59e0b' };
-            case 'knowledge': return { ...base, background: '#0ea5e9' };
-            case 'email': return { ...base, background: '#ec4899' };
-            case 'whatsapp': return { ...base, background: '#25D366' };
-            case 'doc_writer': return { ...base, background: '#f97316' }; // Orange for Files
-            case 'mcp': return { ...base, background: '#8b5cf6' };
-            default: return base;
+        } catch (e) {
+            console.error(e);
+            setResult({ result: "Execution Error" });
+        } finally {
+            setIsGenerating(false);
         }
     };
 
-    const addNode = (type: string, label: string, color: string) => {
-        const id = Math.random().toString(36).substr(2, 9);
-        const newNode: Node = {
-            id,
-            position: { x: Math.random() * 300 + 100, y: Math.random() * 300 + 100 },
-            data: { 
-                label, backendType: type,
-                systemInstruction: type === 'agent' ? 'You are a helpful assistant.' : undefined,
-                userPrompt: type === 'input' ? 'Start here...' : undefined,
-                receiverEmail: type === 'email' ? '' : undefined,
-                receiverPhone: type === 'whatsapp' ? '' : undefined,
-                serverCommand: type === 'mcp' ? 'python local_mcp.py' : undefined,
-                knowledgeBotId: type === 'knowledge' ? '' : undefined,
-                filename: type === 'doc_writer' ? 'report.docx' : undefined
-            }, 
-            type: type === 'input' ? 'input' : 'default',
-            style: { ...getStyleForType(type), background: color }
-        };
-        setNodes((nds) => [...nds, newNode]);
+    const handleMagicBuild = () => {
+        setIsGenerating(true);
+        setTimeout(() => {
+            const promptLower = magicPrompt.toLowerCase();
+            let newNodes: Node[] = [
+                { id: '1', position: { x: 50, y: 250 }, data: { label: 'Start', backendType: 'input', userPrompt: magicPrompt }, type: 'input', style: { background: '#10b981', color: 'white', border: 'none', width: 160, padding: '10px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold' } },
+                { id: '2', position: { x: 300, y: 250 }, data: { label: 'AI Agent', backendType: 'agent', systemInstruction: 'You are a smart AI.' }, type: 'default', style: { background: '#4f46e5', color: 'white', border: 'none', width: 160, padding: '10px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold' } }
+            ];
+            let newEdges: Edge[] = [
+                { id: 'e1-2', source: '1', target: '2', animated: true, style: { stroke: '#4f46e5', strokeWidth: 2 } }
+            ];
+
+            if (promptLower.includes('search') || promptLower.includes('news')) {
+                newNodes.push({ id: '3', position: { x: 550, y: 150 }, data: { label: 'Web Search', backendType: 'search' }, type: 'default', style: { background: '#ec4899', color: 'white', border: 'none', width: 160, padding: '10px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold' } });
+                newEdges.push({ id: 'e2-3', source: '2', target: '3', animated: true, style: { stroke: '#ec4899', strokeWidth: 2 } });
+            }
+
+            if (promptLower.includes('email')) {
+                newNodes.push({ id: '4', position: { x: 550, y: 350 }, data: { label: 'Send Email', backendType: 'email' }, type: 'default', style: { background: '#f59e0b', color: 'white', border: 'none', width: 160, padding: '10px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold' } });
+                newEdges.push({ id: 'e2-4', source: '2', target: '4', animated: true, style: { stroke: '#f59e0b', strokeWidth: 2 } });
+            }
+
+            setNodes(newNodes);
+            setEdges(newEdges);
+            setShowMagicModal(false);
+            setMagicPrompt("");
+            setIsGenerating(false);
+        }, 1500);
     };
 
-    const selectedNode = nodes.find(n => n.id === selectedNodeId);
+    // --- Handle Save Workflow to Database Directly ---
+    const handleSaveWorkflowToDB = async () => {
+        if (!workflowName) {
+            alert("Please provide a name for the workflow.");
+            return;
+        }
+        setIsSavingWorkflow(true);
+        try {
+            const workflowData = {
+                name: workflowName,
+                description: workflowDesc,
+                nodes: nodes,
+                edges: edges
+            };
+
+            if (editingWorkflowId) {
+                // Update existing workflow
+                await api.updateWorkflow(editingWorkflowId, workflowData);
+                alert("Workflow updated successfully!");
+            } else {
+                // Create new workflow
+                const result = await api.saveWorkflow(workflowData);
+                setEditingWorkflowId(result.id);
+                alert("Workflow saved successfully! You can now link it to a Bot.");
+            }
+            setIsSaveModalOpen(false);
+        } catch (error) {
+            console.error(error);
+            alert("Failed to save workflow. See console for details.");
+        } finally {
+            setIsSavingWorkflow(false);
+        }
+    };
+
 
     return (
-        <div className="h-screen w-screen bg-slate-950 flex flex-col font-sans text-slate-100 overflow-hidden">
-            {/* Header */}
-            <div className="h-16 flex-none border-b border-slate-800 bg-slate-900/50 flex items-center justify-between px-6 z-20 backdrop-blur-sm">
+        <div className="flex flex-col h-screen bg-slate-950 font-sans overflow-hidden">
+            {/* Nav Bar */}
+            <div className="h-16 border-b border-slate-800 flex items-center justify-between px-6 bg-slate-900 z-10 shrink-0 shadow-sm">
                 <div className="flex items-center gap-4">
-                    <Link to="/dashboard" className="p-2 hover:bg-slate-800 rounded-lg text-slate-400"><ArrowLeft className="w-5 h-5" /></Link>
-                    <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 hover:bg-slate-800 rounded-lg text-slate-400">
-                        {isSidebarOpen ? <PanelLeftClose className="w-5 h-5" /> : <PanelLeftOpen className="w-5 h-5" />}
-                    </button>
-                    <h1 className="text-lg font-bold text-white bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">AI Agent Builder</h1>
+                    <Link to="/dashboard" className="text-slate-400 hover:text-white transition-colors"><ArrowLeft className="w-5 h-5" /></Link>
+                    <h1 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
+                        <Bot className="w-6 h-6 text-indigo-500" />
+                        BotCraft Builder
+                    </h1>
                 </div>
-                <div className="flex gap-3">
-                    <button onClick={() => setShowMagicModal(true)} className="flex items-center gap-2 px-4 py-2 text-sm font-bold text-white bg-purple-600 hover:bg-purple-500 rounded-lg shadow-lg shadow-purple-500/20 transition-all border border-purple-400/20">
+                <div className="flex items-center gap-3">
+                    <button onClick={() => setShowMagicModal(true)} className="flex items-center gap-2 bg-purple-600/20 text-purple-400 border border-purple-500/30 px-4 py-2 rounded-lg hover:bg-purple-600 hover:text-white transition-all text-sm font-semibold">
                         <Sparkles className="w-4 h-4" /> Magic Build
                     </button>
-                    <button onClick={runAgent} disabled={isRunning} className="flex items-center gap-2 px-6 py-2 text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg shadow-lg">
-                        {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />} Run
+                    {/* --- Trigger Save Modal --- */}
+                    <button
+                        onClick={() => setIsSaveModalOpen(true)}
+                        className="flex items-center gap-2 bg-slate-800 border border-slate-700 text-slate-200 px-4 py-2 rounded-lg hover:bg-slate-700 transition-all text-sm font-semibold"
+                    >
+                        <Save className="w-4 h-4" /> Save Workflow
+                    </button>
+                    <button onClick={handleRunWorkflow} disabled={isGenerating} className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2 rounded-lg hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-500/20 disabled:opacity-50 font-bold text-sm">
+                        {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
+                        Run Test
                     </button>
                 </div>
             </div>
 
-            <div className="flex flex-1 overflow-hidden relative">
-                {/* Palette */}
-                <div className={`${isSidebarOpen ? 'w-64' : 'w-0'} transition-all duration-300 flex-none bg-slate-900 border-r border-slate-800 overflow-hidden`}>
-                    <div className="w-64 p-4 flex flex-col gap-3 h-full overflow-y-auto">
-                        <div className="text-xs font-bold text-slate-500 uppercase">Logic</div>
-                        <button onClick={() => addNode('input', 'Start', '#10b981')} className="flex items-center gap-3 p-3 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-sm"><Database className="w-4 h-4 text-emerald-400" /> Start</button>
-                        <button onClick={() => addNode('agent', 'Agent', '#6366f1')} className="flex items-center gap-3 p-3 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-sm"><Bot className="w-4 h-4 text-indigo-400" /> Agent</button>
-                        
-                        <div className="text-xs font-bold text-slate-500 uppercase mt-4">Tools</div>
-                        <button onClick={() => addNode('tool', 'Search', '#f59e0b')} className="flex items-center gap-3 p-3 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-sm"><Search className="w-4 h-4 text-amber-400" /> Web Search</button>
-                        <button onClick={() => addNode('mcp', 'MCP Tool', '#8b5cf6')} className="flex items-center gap-3 p-3 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-sm"><Server className="w-4 h-4 text-violet-400" /> MCP Server</button>
-                        <button onClick={() => addNode('knowledge', 'Knowledge Base', '#0ea5e9')} className="flex items-center gap-3 p-3 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-sm"><BookOpen className="w-4 h-4 text-sky-400" /> Knowledge RAG</button>
-
-                        <div className="text-xs font-bold text-slate-500 uppercase mt-4">Actions</div>
-                        <button onClick={() => addNode('email', 'Email', '#ec4899')} className="flex items-center gap-3 p-3 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-sm"><Mail className="w-4 h-4 text-pink-400" /> Email</button>
-                        <button onClick={() => addNode('whatsapp', 'WhatsApp', '#25D366')} className="flex items-center gap-3 p-3 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-sm"><MessageSquare className="w-4 h-4 text-green-400" /> WhatsApp</button>
-                        <button onClick={() => addNode('doc_writer', 'Doc / Word', '#f97316')} className="flex items-center gap-3 p-3 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 text-sm"><FileText className="w-4 h-4 text-orange-400" /> Write Word Doc</button>
+            <div className="flex flex-1 relative overflow-hidden">
+                {/* Left Sidebar - Tools */}
+                <div className={`${isSidebarOpen ? 'w-64' : 'w-0'} transition-all duration-300 bg-slate-900 border-r border-slate-800 flex flex-col z-20 shrink-0 overflow-y-auto`}>
+                    <div className="p-4">
+                        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Nodes</h3>
+                        <div className="space-y-2">
+                            <div draggable onDragStart={(e) => onDragStart(e, 'input', 'Start', '#10b981', 'input')} className="bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-xl cursor-grab hover:bg-emerald-500/20 transition-colors flex items-center gap-3 group">
+                                <div className="bg-emerald-500 p-1.5 rounded-lg"><MessageSquare className="w-4 h-4 text-white" /></div>
+                                <span className="text-sm font-semibold text-emerald-100 group-hover:text-white">User Input</span>
+                            </div>
+                            <div draggable onDragStart={(e) => onDragStart(e, 'default', 'Agent', '#4f46e5', 'agent')} className="bg-indigo-500/10 border border-indigo-500/20 p-3 rounded-xl cursor-grab hover:bg-indigo-500/20 transition-colors flex items-center gap-3 group">
+                                <div className="bg-indigo-500 p-1.5 rounded-lg"><BrainCircuit className="w-4 h-4 text-white" /></div>
+                                <span className="text-sm font-semibold text-indigo-100 group-hover:text-white">LLM Agent</span>
+                            </div>
+                            <div draggable onDragStart={(e) => onDragStart(e, 'default', 'Search', '#ec4899', 'search')} className="bg-pink-500/10 border border-pink-500/20 p-3 rounded-xl cursor-grab hover:bg-pink-500/20 transition-colors flex items-center gap-3 group">
+                                <div className="bg-pink-500 p-1.5 rounded-lg"><Search className="w-4 h-4 text-white" /></div>
+                                <span className="text-sm font-semibold text-pink-100 group-hover:text-white">Web Search</span>
+                            </div>
+                            <div draggable onDragStart={(e) => onDragStart(e, 'default', 'Email', '#f59e0b', 'email')} className="bg-amber-500/10 border border-amber-500/20 p-3 rounded-xl cursor-grab hover:bg-amber-500/20 transition-colors flex items-center gap-3 group">
+                                <div className="bg-amber-500 p-1.5 rounded-lg"><Mail className="w-4 h-4 text-white" /></div>
+                                <span className="text-sm font-semibold text-amber-100 group-hover:text-white">Send Email</span>
+                            </div>
+                            <div draggable onDragStart={(e) => onDragStart(e, 'default', 'Doc Writer', '#3b82f6', 'doc_writer')} className="bg-blue-500/10 border border-blue-500/20 p-3 rounded-xl cursor-grab hover:bg-blue-500/20 transition-colors flex items-center gap-3 group">
+                                <div className="bg-blue-500 p-1.5 rounded-lg"><FileText className="w-4 h-4 text-white" /></div>
+                                <span className="text-sm font-semibold text-blue-100 group-hover:text-white">Write Document</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
-                {/* Canvas */}
-                <div className="flex-1 relative bg-slate-950 min-w-0">
-                    <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} onConnect={onConnect} onNodeClick={(_, n) => setSelectedNodeId(n.id)} colorMode="dark" fitView>
-                        <Background color="#334155" gap={24} size={1} />
-                        <Controls className="bg-slate-800 border-slate-700 fill-slate-300" />
-                        <MiniMap className="bg-slate-900 border-slate-800" maskColor="rgba(30, 41, 59, 0.8)" nodeColor="#6366f1" />
-                    </ReactFlow>
-                    {result && <div className="absolute bottom-6 left-6 right-6 bg-slate-900/95 backdrop-blur-xl border border-slate-700 rounded-2xl p-6 shadow-2xl max-h-60 overflow-y-auto z-30"><pre className="text-sm text-slate-300 whitespace-pre-wrap font-mono">{typeof result.result === 'string' ? result.result : JSON.stringify(result, null, 2)}</pre><button onClick={() => setResult(null)} className="absolute top-4 right-4 text-slate-500 hover:text-white"><X className="w-5 h-5" /></button></div>}
+                {/* Main Canvas Area */}
+                <div className="flex-1 relative bg-slate-950 flex flex-col">
+                    <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="absolute top-4 left-4 z-30 bg-slate-800 border border-slate-700 p-2 rounded-lg text-slate-400 hover:text-white shadow-lg">
+                        {isSidebarOpen ? <PanelLeftClose className="w-5 h-5" /> : <PanelLeftOpen className="w-5 h-5" />}
+                    </button>
+
+                    <div className="flex-1 relative" onDrop={onDrop} onDragOver={onDragOver}>
+                        <ReactFlow
+                            nodes={nodes}
+                            edges={edges}
+                            onNodesChange={onNodesChange}
+                            onConnect={onConnect}
+                            onInit={setReactFlowInstance}
+                            onNodeClick={onNodeClick}
+                            onPaneClick={() => { setSelectedNode(null); setIsSettingsOpen(false); }}
+                            fitView
+                        >
+                            <Background color="#334155" gap={20} size={2} />
+                            <Controls className="bg-slate-900 border-slate-700 fill-white" />
+                        </ReactFlow>
+
+                        {/* Floating Result Panel */}
+                        {result && (
+                            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-full max-w-2xl bg-slate-900/95 backdrop-blur-md border border-slate-700 rounded-2xl p-6 shadow-2xl z-40 max-h-64 overflow-y-auto">
+                                <div className="flex justify-between items-start mb-2">
+                                    <h3 className="text-emerald-400 font-bold flex items-center gap-2"><Sparkles className="w-4 h-4" /> Execution Complete</h3>
+                                    <button onClick={() => setResult(null)} className="text-slate-500 hover:text-white"><X className="w-5 h-5" /></button>
+                                </div>
+                                <div className="prose prose-invert max-w-none text-slate-300 text-sm mt-2">
+                                    {typeof result.result === 'string' ? result.result : JSON.stringify(result.result, null, 2)}
+                                </div>
+                            </div>
+                        )}
+                    </div>
                 </div>
 
-                {/* Properties Panel */}
-                {selectedNode && (
-                    <div className="w-80 flex-none bg-slate-900 border-l border-slate-800 p-6 flex flex-col gap-4 shadow-xl overflow-y-auto z-20">
-                        <div className="flex justify-between"><h2 className="text-sm font-bold text-white">Config</h2><button onClick={() => setSelectedNodeId(null)}><X className="w-4 h-4 text-slate-500" /></button></div>
-                        <div className="space-y-4">
-                            <div><label className="text-xs text-slate-400">Label</label><input type="text" value={selectedNode.data.label as string} onChange={(e) => updateNodeData('label', e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-sm text-white" /></div>
-                            
-                            {selectedNode.data.backendType === 'input' && <div><label className="text-xs text-emerald-400 font-bold">User Prompt</label><textarea value={selectedNode.data.userPrompt as string} onChange={(e) => updateNodeData('userPrompt', e.target.value)} className="w-full h-32 bg-slate-800 border border-slate-700 rounded p-2 text-sm text-white" /></div>}
-                            
-                            {selectedNode.data.backendType === 'agent' && <div><label className="text-xs text-indigo-400 font-bold">System Instructions</label><textarea value={selectedNode.data.systemInstruction as string} onChange={(e) => updateNodeData('systemInstruction', e.target.value)} className="w-full h-32 bg-slate-800 border border-slate-700 rounded p-2 text-sm text-white" /></div>}
-                            
-                            {selectedNode.data.backendType === 'mcp' && <div><label className="text-xs text-violet-400 font-bold">Command</label><input type="text" value={selectedNode.data.serverCommand as string} onChange={(e) => updateNodeData('serverCommand', e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-sm text-white font-mono" /></div>}
+                {/* Right Sidebar - Node Settings */}
+                {selectedNode && isSettingsOpen && (
+                    <div className="w-80 bg-slate-900 border-l border-slate-800 flex flex-col z-20 shrink-0 shadow-2xl">
+                        <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-800/50">
+                            <h3 className="font-bold text-white flex items-center gap-2"><Settings className="w-4 h-4 text-indigo-400" /> Config</h3>
+                            <button onClick={() => setIsSettingsOpen(false)} className="text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+                        </div>
+                        <div className="p-5 flex-1 overflow-y-auto space-y-6">
 
-                            {selectedNode.data.backendType === 'knowledge' && <div><label className="text-xs text-sky-400 font-bold">Bot ID (for RAG)</label><input type="text" value={selectedNode.data.knowledgeBotId as string} onChange={(e) => updateNodeData('knowledgeBotId', e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-sm text-white" placeholder="UUID from Dashboard" /><p className="text-[10px] text-slate-500 mt-1">Copy ID from Dashboard URL</p></div>}
+                            <div>
+                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Node Label</label>
+                                <input type="text" value={selectedNode.data.label as string} onChange={(e) => updateNodeData('label', e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:ring-2 focus:ring-indigo-500 outline-none" />
+                            </div>
 
-                            {selectedNode.data.backendType === 'email' && <div><label className="text-xs text-pink-400 font-bold">Receiver Email</label><input type="email" value={selectedNode.data.receiverEmail as string} onChange={(e) => updateNodeData('receiverEmail', e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-sm text-white" /></div>}
+                            {selectedNode.data.backendType === 'input' && (
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Test Prompt</label>
+                                    <textarea value={selectedNode.data.userPrompt as string || ''} onChange={(e) => updateNodeData('userPrompt', e.target.value)} className="w-full h-32 bg-slate-950 border border-slate-700 rounded-lg p-3 text-sm text-white focus:ring-2 focus:ring-indigo-500 outline-none resize-none" />
+                                </div>
+                            )}
 
-                            {selectedNode.data.backendType === 'whatsapp' && <div><label className="text-xs text-green-400 font-bold">Receiver Phone</label><input type="text" value={selectedNode.data.receiverPhone as string} onChange={(e) => updateNodeData('receiverPhone', e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-sm text-white" placeholder="+123..." /></div>}
+                            {selectedNode.data.backendType === 'agent' && (
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">System Instructions</label>
+                                    <textarea value={selectedNode.data.systemInstruction as string || ''} onChange={(e) => updateNodeData('systemInstruction', e.target.value)} className="w-full h-48 bg-slate-950 border border-slate-700 rounded-lg p-3 text-sm text-white focus:ring-2 focus:ring-indigo-500 outline-none resize-none" placeholder="You are a helpful assistant..." />
+                                </div>
+                            )}
 
-                            {selectedNode.data.backendType === 'doc_writer' && <div><label className="text-xs text-orange-400 font-bold">Filename (Word)</label><input type="text" value={selectedNode.data.filename as string} onChange={(e) => updateNodeData('filename', e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-sm text-white" placeholder="report.docx" /></div>}
+                            {selectedNode.data.backendType === 'email' && (
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Receiver Email (Optional)</label>
+                                    <input type="email" value={selectedNode.data.receiverEmail as string || ''} onChange={(e) => updateNodeData('receiverEmail', e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Overrides default receiver" />
+                                </div>
+                            )}
 
-                            <div className="pt-4 mt-auto border-t border-slate-800"><button onClick={deleteSelectedNode} className="w-full py-2 text-red-500 bg-red-500/10 border border-red-500/50 rounded flex justify-center items-center gap-2 text-sm"><Trash2 className="w-4 h-4" /> Delete</button></div>
+                            {selectedNode.data.backendType === 'doc_writer' && (
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Filename</label>
+                                    <input type="text" value={selectedNode.data.filename as string || ''} onChange={(e) => updateNodeData('filename', e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="report.docx" />
+                                </div>
+                            )}
+
+                            <div className="pt-4 border-t border-slate-800"><button onClick={handleDeleteNode} className="w-full flex items-center justify-center gap-2 py-2.5 bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-white rounded-lg transition-colors font-bold text-sm"><Trash2 className="w-4 h-4" /> Delete</button></div>
                         </div>
                     </div>
                 )}
@@ -228,10 +417,53 @@ export const AgentBuilder = () => {
                         <button onClick={() => setShowMagicModal(false)} className="absolute top-4 right-4 text-slate-500 hover:text-white"><X className="w-5 h-5" /></button>
                         <div className="flex gap-3 mb-4"><Sparkles className="w-6 h-6 text-purple-400" /><h2 className="text-xl font-bold text-white">Magic Build</h2></div>
                         <textarea value={magicPrompt} onChange={(e) => setMagicPrompt(e.target.value)} className="w-full h-32 bg-slate-800 border border-slate-700 rounded-xl p-4 text-slate-200 focus:ring-2 focus:ring-purple-500 mb-6 resize-none" placeholder="Describe your agent..." />
-                        <button onClick={handleMagicBuild} disabled={isGenerating} className="w-full py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold flex justify-center items-center gap-2">{isGenerating ? <Loader2 className="animate-spin" /> : "Generate Workflow"}</button>
+                        <button onClick={handleMagicBuild} disabled={isGenerating} className="w-full py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold flex justify-center items-center gap-2">
+                            {isGenerating ? <Loader2 className="w-5 h-5 animate-spin" /> : <Sparkles className="w-5 h-5" />} Generate Graph
+                        </button>
                     </div>
                 </div>
             )}
+
+            {/* --- Save Workflow Modal --- */}
+            {isSaveModalOpen && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-lg shadow-2xl relative">
+                        <button onClick={() => setIsSaveModalOpen(false)} className="absolute top-4 right-4 text-slate-500 hover:text-white"><X className="w-5 h-5" /></button>
+                        <div className="flex gap-3 mb-4"><Save className="w-6 h-6 text-indigo-400" /><h2 className="text-xl font-bold text-white">{editingWorkflowId ? 'Update Workflow' : 'Save Workflow'}</h2></div>
+
+                        <div className="space-y-4 mb-6">
+                            <div>
+                                <label className="block text-sm font-medium text-slate-400 mb-1">Workflow Name</label>
+                                <input
+                                    type="text"
+                                    value={workflowName}
+                                    onChange={(e) => setWorkflowName(e.target.value)}
+                                    placeholder="e.g. Email Sender Agent"
+                                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-400 mb-1">Description (Optional)</label>
+                                <textarea
+                                    value={workflowDesc}
+                                    onChange={(e) => setWorkflowDesc(e.target.value)}
+                                    placeholder="What does this workflow do?"
+                                    className="w-full h-24 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500 outline-none resize-none"
+                                />
+                            </div>
+                        </div>
+
+                        <button
+                            onClick={handleSaveWorkflowToDB}
+                            disabled={isSavingWorkflow || !workflowName}
+                            className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl font-bold flex justify-center items-center gap-2"
+                        >
+                            {isSavingWorkflow ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />} {editingWorkflowId ? 'Update Workflow' : 'Save to Database'}
+                        </button>
+                    </div>
+                </div>
+            )}
+
         </div>
     );
 };

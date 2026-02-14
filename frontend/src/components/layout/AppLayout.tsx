@@ -1,6 +1,6 @@
 import React from 'react';
 import { Outlet, NavLink, useNavigate, Link } from 'react-router-dom';
-import { Bot, LayoutDashboard, Settings, LogOut, Plus, Sparkles } from 'lucide-react';
+import { Bot, LayoutDashboard, Settings, LogOut, Plus, Sparkles, MessageSquare } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { supabase } from '../../lib/supabase';
 
@@ -32,8 +32,8 @@ export const AppLayout = () => {
                 </div>
 
                 <div className="px-4 mb-8">
-                    <Link 
-                        to="/create-bot" 
+                    <Link
+                        to="/create-bot"
                         className="group relative flex items-center justify-center gap-2 w-full bg-indigo-600 hover:bg-indigo-500 text-white py-3 rounded-xl font-semibold transition-all shadow-lg shadow-indigo-500/20 overflow-hidden"
                     >
                         <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite] pointer-events-none" />
@@ -61,7 +61,7 @@ export const AppLayout = () => {
                             <div className="absolute left-[-12px] w-1 h-5 bg-indigo-500 rounded-r-full" />
                         )}
                     </NavLink>
-                    
+
                     <NavLink
                         to="/agent-builder"
                         className={({ isActive }) => cn(
