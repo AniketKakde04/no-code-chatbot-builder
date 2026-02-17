@@ -12,11 +12,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
 import uuid
+import json
 from typing import List, Dict, Any, Optional
 from workflow_engine import build_and_run_workflow
 from supabase import create_client, Client, ClientOptions
 from rag import ingest_file, get_answer, delete_bot_data
 from threading import Thread
+from livekit import api
 
 app = FastAPI()
 
@@ -718,6 +720,79 @@ async def execute_workflow(request: WorkflowRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- 7. LIVEKIT TOKEN ENDPOINT ---
+
+@app.get("/api/token")
+async def get_livekit_token(room_name: str, participant_name: str, bot_id: Optional[str] = None):
+    api_key = os.getenv("LIVEKIT_API_KEY")
+    api_secret = os.getenv("LIVEKIT_API_SECRET")
+    livekit_url = os.getenv("LIVEKIT_URL")
+
+    if not api_key or not api_secret or not livekit_url:
+        raise HTTPException(status_code=500, detail="LiveKit credentials not configured")
+
+    grant = api.VideoGrants(room_join=True, room=room_name)
+    token = api.AccessToken(api_key, api_secret) \
+        .with_grants(grant) \
+        .with_identity(participant_name) \
+        .with_name(participant_name) 
+    
+    if bot_id:
+        token.with_metadata(json.dumps({"bot_id": bot_id}))
+
+    return {"token": token.to_jwt(), "url": livekit_url}
+
+# --- 8. OPENAI COMPATIBLE PROXY FOR VOICE AGENT ---
+
+@app.post("/api/bot/{bot_id}/chat/completions")
+async def bot_chat_proxy(bot_id: str, request: Request):
+    """
+    Proxy endpoint that mimics OpenAI's ChatCompletion API.
+    Used by the Voice Agent to talk to our RAG/Workflow engine.
+    """
+    try:
+        data = await request.json()
+        messages = data.get("messages", [])
+        if not messages:
+            return {"choices": [{"message": {"content": "I didn't hear anything."}}]}
+        
+        # Get the last user message
+        last_user_msg = next((m for m in reversed(messages) if m["role"] == "user"), None)
+        question = last_user_msg["content"] if last_user_msg else "Hello"
+
+        print(f"🎤 Voice Agent asking Bot {bot_id}: {question}")
+
+        # Re-use the existing logic by calling the internal function or creating a request
+        # We'll just call the chat endpoint logic directly if possible, or trigger a self-request
+        # For simplicity and reliability, let's use httpx to call our own /chat endpoint
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                "http://localhost:8000/chat",
+                json={"bot_id": bot_id, "question": question}
+            )
+            response_data = response.json()
+            answer = response_data.get("answer", "I'm sorry, I couldn't process that.")
+
+        return {
+            "id": "chatcmpl-proxy",
+            "object": "chat.completion",
+            "created": 1677652288,
+            "model": "bot-proxy",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": answer
+                },
+                "finish_reason": "stop"
+            }]
+        }
+    except Exception as e:
+        print(f"Proxy Error: {e}")
+        return {
+            "choices": [{"message": {"content": f"Error: {str(e)}"}}]}
 
 if __name__ == "__main__":
     import uvicorn

@@ -15,51 +15,55 @@ import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 import { TelegramIntegration } from '@/pages/dashboard/TelegramIntegration';
 import { WhatsAppIntegration } from '@/pages/dashboard/WhatsAppIntegration';
 
+import { VoiceProvider } from '@/contexts/VoiceContext';
+
 function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <Routes>
-          {/* Public Auth Routes */}
-          <Route element={<AuthLayout />}>
-            <Route path="/login" element={<SignIn />} />
-            <Route path="/signup" element={<SignUp />} />
-          </Route>
+        <VoiceProvider>
+          <Routes>
+            {/* Public Auth Routes */}
+            <Route element={<AuthLayout />}>
+              <Route path="/login" element={<SignIn />} />
+              <Route path="/signup" element={<SignUp />} />
+            </Route>
 
-          {/* Protected Dashboard Routes (WITH Sidebar) */}
-          <Route element={
-            <ProtectedRoute>
-              <AppLayout />
-            </ProtectedRoute>
-          }>
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/create-bot" element={<CreateBot />} />
-            <Route path="/edit-bot/:botId" element={<EditBot />} />
-            <Route path="/embed/:botId" element={<EmbedBot />} />
-            <Route path="/chat/:botId" element={<ChatPage />} />
-            <Route path="/bot/:botId/telegram" element={<TelegramIntegration />} />
-            <Route path="/bot/:botId/whatsapp" element={<WhatsAppIntegration />} />
-          </Route>
+            {/* Protected Dashboard Routes (WITH Sidebar) */}
+            <Route element={
+              <ProtectedRoute>
+                <AppLayout />
+              </ProtectedRoute>
+            }>
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/create-bot" element={<CreateBot />} />
+              <Route path="/edit-bot/:botId" element={<EditBot />} />
+              <Route path="/embed/:botId" element={<EmbedBot />} />
+              <Route path="/chat/:botId" element={<ChatPage />} />
+              <Route path="/bot/:botId/telegram" element={<TelegramIntegration />} />
+              <Route path="/bot/:botId/whatsapp" element={<WhatsAppIntegration />} />
+            </Route>
 
-          {/* Standalone Builder Route (NO Sidebar - Full Screen) */}
-          <Route path="/agent-builder" element={
-            <ProtectedRoute>
-              <AgentBuilder />
-            </ProtectedRoute>
-          } />
-          <Route path="/agent-builder/:workflowId" element={
-            <ProtectedRoute>
-              <AgentBuilder />
-            </ProtectedRoute>
-          } />
+            {/* Standalone Builder Route (NO Sidebar - Full Screen) */}
+            <Route path="/agent-builder" element={
+              <ProtectedRoute>
+                <AgentBuilder />
+              </ProtectedRoute>
+            } />
+            <Route path="/agent-builder/:workflowId" element={
+              <ProtectedRoute>
+                <AgentBuilder />
+              </ProtectedRoute>
+            } />
 
-          {/* Public Share Route (NO auth, NO sidebar) */}
-          <Route path="/s/:shareId" element={<PublicChat />} />
+            {/* Public Share Route (NO auth, NO sidebar) */}
+            <Route path="/s/:shareId" element={<PublicChat />} />
 
-          {/* Default Redirect */}
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
-        </Routes>
+            {/* Default Redirect */}
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          </Routes>
+        </VoiceProvider>
       </BrowserRouter>
     </AuthProvider>
   );

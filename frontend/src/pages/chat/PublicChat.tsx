@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Bot, User, Loader2, Sparkles } from 'lucide-react';
+import { Send, Bot, User, Loader2, Sparkles, Mic } from 'lucide-react';
 import { api } from '@/services/api';
+import { useVoice } from '@/contexts/VoiceContext';
 
 interface Message {
     role: 'user' | 'bot';
@@ -15,8 +16,11 @@ export const PublicChat = () => {
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [botName, setBotName] = useState('AI Assistant');
+    const [botId, setBotId] = useState<string | null>(null);
     const [notFound, setNotFound] = useState(false);
     const [initialLoading, setInitialLoading] = useState(true);
+
+    const { connect, isConnecting: isVoiceConnecting } = useVoice();
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -26,6 +30,7 @@ export const PublicChat = () => {
         api.getPublicBot(shareId)
             .then(data => {
                 setBotName(data.name);
+                setBotId(data.id);
                 setInitialLoading(false);
             })
             .catch(() => {
@@ -123,8 +128,8 @@ export const PublicChat = () => {
                                         </div>
                                     )}
                                     <div className={`max-w-[75%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${msg.role === 'user'
-                                            ? 'bg-indigo-600 text-white rounded-br-md'
-                                            : 'bg-slate-800/80 text-slate-200 border border-slate-700/50 rounded-bl-md'
+                                        ? 'bg-indigo-600 text-white rounded-br-md'
+                                        : 'bg-slate-800/80 text-slate-200 border border-slate-700/50 rounded-bl-md'
                                         }`}>
                                         {msg.content}
                                     </div>
@@ -174,6 +179,14 @@ export const PublicChat = () => {
                             target.style.height = Math.min(target.scrollHeight, 120) + 'px';
                         }}
                     />
+                    <button
+                        onClick={() => botId && connect(botId)}
+                        disabled={isVoiceConnecting || isLoading || !botId}
+                        className="h-[44px] w-[44px] flex items-center justify-center bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-400 hover:text-white rounded-xl transition-all disabled:opacity-50"
+                        title="Start Voice Chat"
+                    >
+                        <Mic className="w-5 h-5" />
+                    </button>
                     <button
                         onClick={handleSend}
                         disabled={!input.trim() || isLoading}

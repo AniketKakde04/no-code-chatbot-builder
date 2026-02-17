@@ -3,9 +3,10 @@ import { useParams, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     ArrowLeft, Send, Bot, User, Trash2, Share2, Check, Copy, X,
-    Loader2, Workflow, ChevronDown, Sparkles, MessageSquare
+    Loader2, Workflow, ChevronDown, Sparkles, MessageSquare, Mic
 } from 'lucide-react';
 import { api } from '@/services/api';
+import { useVoice } from '@/contexts/VoiceContext';
 
 interface Message {
     id?: string;
@@ -33,6 +34,8 @@ export const ChatPage = () => {
     const [isPublic, setIsPublic] = useState(false);
     const [isTogglingShare, setIsTogglingShare] = useState(false);
     const [copied, setCopied] = useState(false);
+
+    const { connect, isConnecting: isVoiceConnecting } = useVoice();
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -273,8 +276,8 @@ export const ChatPage = () => {
                                     )}
                                     <div
                                         className={`max-w-[75%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${msg.role === 'user'
-                                                ? 'bg-indigo-600 text-white rounded-br-md'
-                                                : 'bg-slate-800/80 text-slate-200 border border-slate-700/50 rounded-bl-md'
+                                            ? 'bg-indigo-600 text-white rounded-br-md'
+                                            : 'bg-slate-800/80 text-slate-200 border border-slate-700/50 rounded-bl-md'
                                             }`}
                                     >
                                         {msg.content}
@@ -330,6 +333,14 @@ export const ChatPage = () => {
                             target.style.height = Math.min(target.scrollHeight, 120) + 'px';
                         }}
                     />
+                    <button
+                        onClick={() => connect()}
+                        disabled={isVoiceConnecting || isLoading}
+                        className="h-[44px] w-[44px] flex items-center justify-center bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-400 hover:text-white rounded-xl transition-all disabled:opacity-50"
+                        title="Start Voice Chat"
+                    >
+                        <Mic className="w-5 h-5" />
+                    </button>
                     <button
                         onClick={handleSend}
                         disabled={!input.trim() || isLoading}

@@ -21,3 +21,10 @@ nest_asyncio
 tavily-python
 twilio
 python-docx
+livekit-agents
+livekit-plugins-openai
+livekit-plugins-sarvam
+livekit-plugins-silero
+livekit-api
+livekit-agents[sarvam,openai,silero]
+

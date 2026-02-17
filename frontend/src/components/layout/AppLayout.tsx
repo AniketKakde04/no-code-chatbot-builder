@@ -3,6 +3,7 @@ import { Outlet, NavLink, useNavigate, Link } from 'react-router-dom';
 import { Bot, LayoutDashboard, Settings, LogOut, Plus, Sparkles, MessageSquare } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { supabase } from '../../lib/supabase';
+import { VoiceChat } from '../VoiceChat';
 
 export const AppLayout = () => {
     const navigate = useNavigate();
@@ -112,6 +113,7 @@ export const AppLayout = () => {
                     <Outlet />
                 </div>
             </main>
+            <VoiceChat />
         </div>
     );
 };
