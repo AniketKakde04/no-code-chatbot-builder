@@ -8,9 +8,9 @@ export function CreateBot() {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
-  
+
   const [name, setName] = useState('');
-  
+
   // Data States
   const [files, setFiles] = useState<File[]>([]);
   const [csvFiles, setCsvFiles] = useState<File[]>([]);
@@ -54,7 +54,7 @@ export function CreateBot() {
     try {
       const formData = new FormData();
       formData.append('name', name);
-      
+
       files.forEach(file => formData.append('files', file));
       csvFiles.forEach(file => formData.append('csvfiles', file));
       urls.forEach(url => formData.append('urls', url));
@@ -72,7 +72,7 @@ export function CreateBot() {
   return (
     <div className="p-8 max-w-4xl mx-auto">
       <div className="flex items-center gap-4 mb-8">
-        <button 
+        <button
           onClick={() => navigate('/dashboard')}
           className="p-2 hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-white"
         >
@@ -84,7 +84,7 @@ export function CreateBot() {
         </div>
       </div>
 
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         className="bg-slate-900 border border-slate-800 rounded-2xl p-8"
@@ -117,9 +117,9 @@ export function CreateBot() {
               <span className="bg-indigo-600 w-8 h-8 rounded-full flex items-center justify-center text-sm">2</span>
               Knowledge Base (Multi-select)
             </h2>
-            
+
             <div className="pl-10 grid grid-cols-1 md:grid-cols-3 gap-6">
-              
+
               {/* PDF Upload */}
               <div className="space-y-3">
                 <label className="block text-sm font-medium text-slate-300">PDF Documents</label>
@@ -191,8 +191,8 @@ export function CreateBot() {
                     className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
                     onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddUrl())}
                   />
-                  <button 
-                    type="button" 
+                  <button
+                    type="button"
                     onClick={handleAddUrl}
                     className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-lg"
                   >
