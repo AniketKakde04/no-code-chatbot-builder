@@ -3,7 +3,7 @@ import logging
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from langchain_community.document_loaders import PyPDFLoader, CSVLoader, WebBaseLoader
+from langchain_community.document_loaders import CSVLoader, WebBaseLoader,PyMuPDFLoader
 from langchain_community.document_loaders import SQLDatabaseLoader
 from langchain_community.utilities import SQLDatabase
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -36,7 +36,7 @@ def ingest_file(file_path: str, bot_id: str, sql_query: str = None):
             loader = WebBaseLoader(f"https://r.jina.ai/{file_path}")
 
         elif file_path.lower().endswith(".pdf"):
-            loader = PyPDFLoader(file_path)
+            loader = PyMuPDFLoader(file_path)
 
         elif file_path.lower().endswith(".csv"):
             loader = CSVLoader(
@@ -69,10 +69,11 @@ def ingest_file(file_path: str, bot_id: str, sql_query: str = None):
         )
 
         splits = text_splitter.split_documents(docs)
+        splits = [doc for doc in splits if len(doc.page_content.strip()) > 10] 
 
         if not splits:
-            logger.warning("No text chunks created.")
-            return False, "No text chunks created."
+            logger.warning("No significant text chunks found (PDF might be image-only).")
+            return False, "No readable text found."
 
         # -------- Store Vectors --------
         Chroma.from_documents(
