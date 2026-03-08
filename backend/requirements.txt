@@ -28,3 +28,8 @@ livekit-plugins-silero
 livekit-api
 livekit-agents[sarvam,openai,silero]
 
+google-auth-oauthlib 
+google-auth 
+google-api-python-client 
+gspread
+

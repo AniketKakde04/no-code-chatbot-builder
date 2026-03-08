@@ -230,6 +230,20 @@ export const connectWhatsApp = async (botId: string, phoneId: string, accessToke
     return response.json();
 };
 
+export const connectTelegram = async (botId: string, botToken: string) => {
+    const token = await getAuthToken();
+    const formData = new FormData();
+    formData.append('token', botToken);
+
+    const response = await fetch(`${API_URL}/bots/${botId}/telegram`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData,
+    });
+    if (!response.ok) throw new Error('Failed to connect Telegram');
+    return response.json();
+};
+
 // --- Export an 'api' object to fix missing import errors in other files ---
 export const api = {
     getBots,
@@ -247,5 +261,6 @@ export const api = {
     toggleShare,
     getPublicBot,
     sendPublicMessage,
-    connectWhatsApp
+    connectWhatsApp,
+    connectTelegram
 };

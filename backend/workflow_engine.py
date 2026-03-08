@@ -10,9 +10,14 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
+import supabase
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 from docx import Document as DocxDocument # NEW IMPORT
+
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+import gspread
 
 # Apply nested asyncio to allow MCP client to run inside FastAPI
 nest_asyncio.apply()
@@ -26,7 +31,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 # --- MCP IMPORTS ---
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp.client.stdio import logger, stdio_client
 from langchain_mcp_adapters.tools import load_mcp_tools
 
 # --- 1. DEFINE STATE ---
@@ -390,9 +395,78 @@ def get_doc_writer_node(filename: str):
 
     return doc_writer_node_func
 
+def get_google_sheets_node(spreadsheet_id: str, sheet_name: str):
+    """Appends content from the agent to a Google Sheet."""
+    def google_sheets_node_func(state: AgentState):
+        print(f">>> GOOGLE SHEETS NODE: entered, sheet={sheet_name}")
+        
+        try:
+            # Get user_id from metadata
+            user_id = state.get("metadata", {}).get("user_id")
+            print(f">>> GOOGLE SHEETS NODE: user_id from state: {user_id}")
+            
+            if not user_id:
+                return {"messages": [AIMessage(content="❌ Error: user_id not found in state")]}
+            
+            # Import supabase from main (at function call time to avoid circular imports)
+            from main import supabase, supabase_admin
+            
+            client = supabase_admin if supabase_admin else supabase
+            
+            if not client:
+                return {"messages": [AIMessage(content="❌ Error: Supabase not initialized")]}
+            
+            # Fetch credentials from Supabase
+            print(f">>> GOOGLE SHEETS NODE: querying user_integrations for user_id={user_id}")
+            res = client.table("user_integrations").select("*").eq("user_id", user_id).eq("provider", "google").execute()
+            print(f">>> GOOGLE SHEETS NODE: query result: {len(res.data) if res.data else 0} records found")
+            
+            if not res.data:
+                return {"messages": [AIMessage(content="❌ Error: Google account not connected. Please sign in with Google.")]}
+            
+            token_info = res.data[0]
+            
+            # Create credentials object
+            creds = Credentials(
+                token=token_info["access_token"],
+                refresh_token=token_info["refresh_token"],
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=os.getenv("GOOGLE_CLIENT_ID"),
+                client_secret=os.getenv("GOOGLE_CLIENT_SECRET")
+            )
+            
+            # Refresh credentials if expired
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                # Update the new access token in Supabase
+                client.table("user_integrations").update({"access_token": creds.token}).eq("id", token_info["id"]).execute()
+            
+            # Connect to Google Sheets
+            print(f">>> GOOGLE SHEETS NODE: spreadsheet_id={spreadsheet_id}, sheet_name={sheet_name}")
+            if not spreadsheet_id:
+                return {"messages": [AIMessage(content="❌ Error: No spreadsheet ID configured. Please set the Spreadsheet ID in the node settings.")]}
+            
+            client = gspread.authorize(creds)
+            sheet = client.open_by_key(spreadsheet_id).worksheet(sheet_name)
+            
+            # Get content from the last message
+            last_message = state["messages"][-1]
+            content = str(last_message.content)
+            
+            # Append data to sheet
+            sheet.append_row([content])
+            
+            return {"messages": [AIMessage(content=f"✅ Successfully appended to Google Sheet: {sheet_name}")]}
+            
+        except Exception as e:
+            print(f">>> GOOGLE SHEETS NODE: FAILED → {e}")
+            return {"messages": [AIMessage(content=f"❌ Google Sheets Error: {str(e)}")]}
+    
+    return google_sheets_node_func
+
 # --- 5. GRAPH BUILDER ---
 
-async def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Dict], request_initial_input: str):
+async def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Dict], request_initial_input: str, user_id: str = None):
     print(f"Building workflow with {len(nodes_config)} nodes")
 
     workflow = StateGraph(AgentState)
@@ -414,6 +488,8 @@ async def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Di
         node_id = node['id']
         data = node.get('data', {})
         backend_type = data.get('backendType', 'default')
+        
+        print(f">>> Creating node: {node_id}, backendType: {backend_type}")
 
         if backend_type == 'input':
             input_override = data.get('userPrompt', '')
@@ -442,7 +518,31 @@ async def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Di
         elif backend_type == 'doc_writer':
             filename = data.get('filename')
             workflow.add_node(node_id, get_doc_writer_node(filename))
-
+            
+        elif backend_type == 'google_sheets':
+            spreadsheet_id = data.get('spreadsheetId')
+            sheet_name = data.get('sheetName', 'Sheet1')
+            print(f">>> Creating Google Sheets node: spreadsheet_id={spreadsheet_id}, sheet_name={sheet_name}")
+            workflow.add_node(node_id, get_google_sheets_node(spreadsheet_id, sheet_name))
+        
+        else:
+            # Fallback for unknown types - add a passthrough node
+            print(f"⚠️  Unknown node type '{backend_type}' for node {node_id}. Adding passthrough node.")
+            workflow.add_node(node_id, lambda state: {})
+    
+    # Get all valid node IDs
+    valid_node_ids = {node['id'] for node in nodes_config}
+    print(f">>> Valid node IDs: {valid_node_ids}")
+    
+    # Filter edges to only include those with valid source and target nodes
+    edges_config_filtered = [
+        edge for edge in edges_config
+        if edge.get('source') in valid_node_ids and edge.get('target') in valid_node_ids
+    ]
+    
+    if len(edges_config_filtered) < len(edges_config):
+        print(f"⚠️  Filtered out {len(edges_config) - len(edges_config_filtered)} invalid edges")
+    
     # 2. Add Edges — with proper ReAct loop for Agent ↔ Tool cycling
     #    Before: Agent → Tool → DocWriter  (tool's raw JSON goes straight to doc writer)
     #    After:  Agent ↔ Tool (loop), then Agent → DocWriter when done with tools
@@ -451,7 +551,7 @@ async def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Di
     agent_to_tool = {}   # agent_id -> tool_id
     tool_successor = {}  # tool_id -> next_node_id
 
-    for edge in edges_config:
+    for edge in edges_config_filtered:
         src = edge['source']
         tgt = edge['target']
         src_node = next((n for n in nodes_config if n['id'] == src), None)
@@ -467,7 +567,7 @@ async def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Di
     # Second pass: build edges
     handled_tool_edges = set()  # tool→next edges replaced by the ReAct loop
 
-    for edge in edges_config:
+    for edge in edges_config_filtered:
         source = edge['source']
         target = edge['target']
         source_node = next((n for n in nodes_config if n['id'] == source), None)
@@ -512,7 +612,7 @@ async def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Di
         final_state = await asyncio.wait_for(
             graph_app.ainvoke({
                 "messages": [HumanMessage(content=final_input)],
-                "metadata": {},
+                "metadata": {"user_id": user_id} if user_id else {},
                 "attachment_path": ""
             }),
             timeout=180  # 3 minute timeout

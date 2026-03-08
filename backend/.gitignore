@@ -40,3 +40,5 @@ chroma_db/
 # Temporary files
 temp_*
 *.log
+
+client_secret.json

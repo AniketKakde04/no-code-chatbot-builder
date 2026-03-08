@@ -23,7 +23,8 @@ import { Link, useNavigate } from 'react-router-dom';
 
 import { api } from '../../../src/services/api';
 import { cn } from '../../../src/lib/utils';
-
+import { showToast } from '../../components/ui/Toast';
+import { useSearchParams } from 'react-router-dom';
 export function Dashboard() {
   const navigate = useNavigate();
   const [bots, setBots] = useState<any[]>([]);
@@ -31,11 +32,21 @@ export function Dashboard() {
   const [stats, setStats] = useState({ total_bots: 0, total_messages: 0, total_conversations: 0 });
   const [loading, setLoading] = useState(true);
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
-
+  const [searchParams, setSearchParams] = useSearchParams();
   useEffect(() => {
     fetchData();
   }, []);
 
+  useEffect(() => {
+        // If the URL has ?integration=success, show a message and clean the URL!
+        if (searchParams.get('integration') === 'success') {
+            alert("✅ Google Account Connected Successfully!"); // Replace with your custom Toast if you prefer
+            
+            // Remove the ?integration=success from the URL bar so it doesn't stay there forever
+            searchParams.delete('integration');
+            setSearchParams(searchParams);
+        }
+    }, [searchParams, setSearchParams]);
   const fetchData = async () => {
     try {
       const [botsData, statsData, workflowsData] = await Promise.all([

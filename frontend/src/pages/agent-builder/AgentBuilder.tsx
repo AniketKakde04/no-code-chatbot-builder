@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect ,useRef} from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
     ReactFlow,
@@ -15,6 +15,10 @@ import {
     NodeChange
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+
+
+
+
 import {
     ArrowLeft, Play, Search, Mail, Bot, Loader2, X, Settings, Trash2, Database,
     Server, MessageSquare, Sparkles, PanelLeftClose, PanelLeftOpen, BookOpen, FileText, Save, BrainCircuit
@@ -22,7 +26,7 @@ import {
 
 import { supabase } from '@/lib/supabase'; // Import supabase directly for auth
 import { api } from '@/services/api';
-
+import { useAuth } from '../../contexts/AuthContext';
 const initialNodes: Node[] = [
     {
         id: '1',
@@ -53,7 +57,7 @@ export const AgentBuilder = () => {
     const [edges, setEdges] = useEdgesState(initialEdges);
     const [reactFlowInstance, setReactFlowInstance] = useState<any>(null);
     const [selectedNode, setSelectedNode] = useState<Node | null>(null);
-
+    const { user } = useAuth(); 
     // Run / Generate State
     const [isGenerating, setIsGenerating] = useState(false);
     const [result, setResult] = useState<any>(null);
@@ -73,7 +77,23 @@ export const AgentBuilder = () => {
     const [isSavingWorkflow, setIsSavingWorkflow] = useState(false);
     const [editingWorkflowId, setEditingWorkflowId] = useState<string | null>(null);
     const [loadingWorkflow, setLoadingWorkflow] = useState(false);
+    const [isConnected, setIsConnected] = useState(false);
+    const [googleConnected, setGoogleConnected] = useState(false);
+   
+   const checkGoogleConnection = async () => {
+    if (!user) return;
+    
+    const { data, error } = await supabase
+        .from('user_integrations')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('provider', 'google')
+        .single();
 
+    if (data) {
+        setGoogleConnected(true);
+    }
+};
     // Load existing workflow when editing
     useEffect(() => {
         if (workflowId) {
@@ -98,6 +118,17 @@ export const AgentBuilder = () => {
         }
     }, [workflowId]);
 
+    useEffect(() => {
+    // Check if we just came back from the login
+    if (window.location.search.includes('integration=success')) {
+        setGoogleConnected(true);
+        const newUrl = window.location.pathname;
+        window.history.replaceState({}, document.title, newUrl);
+    } else {
+        // Otherwise, check the database to see if they connected previously
+        checkGoogleConnection();
+    }
+}, [user]);
 
     const onNodesChange = useCallback((changes: NodeChange[]) => {
         setNodes((nds) => applyNodeChanges(changes, nds));
@@ -136,7 +167,7 @@ export const AgentBuilder = () => {
                 id: getId(),
                 type: nodeType,
                 position,
-                data: { label, backendType },
+                data: backendType === 'google_sheets' ? { label, backendType, action: 'append', spreadsheetId: '', sheetName: 'Sheet1', dataPayload: '{{current_data}}' } : { label, backendType },
                 style: { background: color, color: 'white', border: 'none', width: 160, padding: '10px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold' }
             };
 
@@ -187,9 +218,22 @@ export const AgentBuilder = () => {
         };
 
         try {
+            // Get the auth token from Supabase session
+            const { data: { session } } = await supabase.auth.getSession();
+            const token = session?.access_token;
+
+            if (!token) {
+                setResult({ result: "Error: Not authenticated" });
+                setIsGenerating(false);
+                return;
+            }
+
             const res = await fetch('http://localhost:8000/execute-workflow', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
                 body: JSON.stringify(payload)
             });
             const data = await res.json();
@@ -322,6 +366,11 @@ export const AgentBuilder = () => {
                                 <div className="bg-blue-500 p-1.5 rounded-lg"><FileText className="w-4 h-4 text-white" /></div>
                                 <span className="text-sm font-semibold text-blue-100 group-hover:text-white">Write Document</span>
                             </div>
+                            {/* Drag and Drop Google Sheets Node */}
+<div draggable onDragStart={(e) => onDragStart(e, 'default', 'Google Sheets', '#10b981', 'google_sheets')} className="bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-xl cursor-grab hover:bg-emerald-500/20 transition-colors flex items-center gap-3 group">
+                                <div className="bg-emerald-500 p-1.5 rounded-lg"><Database className="w-4 h-4 text-white" /></div>
+                                <span className="text-sm font-semibold text-emerald-100 group-hover:text-white">Google Sheets</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -402,7 +451,78 @@ export const AgentBuilder = () => {
                                     <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Filename</label>
                                     <input type="text" value={selectedNode.data.filename as string || ''} onChange={(e) => updateNodeData('filename', e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="report.docx" />
                                 </div>
+                            
                             )}
+
+                            {/* --- GOOGLE SHEETS NODE SETTINGS --- */}
+{selectedNode.data.backendType === 'google_sheets' && (
+    <div className="space-y-4">
+        <div className="p-4 border border-emerald-200 bg-emerald-50 rounded-lg">
+            <h3 className="font-semibold text-emerald-800 text-sm mb-1">Account Connection</h3>
+            
+            {/* THIS IS THE CONDITIONAL PART */}
+            {googleConnected ? (
+                <div className="flex items-center gap-2 text-emerald-700 font-bold text-sm bg-white p-2 rounded border border-emerald-100">
+                    <span className="text-lg">✅</span> Google Account Linked
+                </div>
+            ) : (
+                <>
+                    <p className="text-xs text-emerald-600 mb-3">
+                        Connect your account to allow this bot to edit your spreadsheets.
+                    </p>
+                    <button 
+                        onClick={() => {
+                            if (user) {
+                                const returnTo = encodeURIComponent(window.location.href);
+                                window.location.href = `http://localhost:8000/auth/google/login?user_id=${user.id}&return_to=${returnTo}`;
+                            }
+                        }}
+                        className="w-full bg-white border border-gray-300 text-gray-700 font-medium text-sm px-4 py-2 rounded shadow-sm hover:bg-gray-50 flex items-center justify-center gap-2"
+                    >
+                        <img src="https://www.google.com/favicon.ico" alt="Google" className="w-4 h-4" />
+                        Sign in with Google
+                    </button>
+                </>
+            )}
+        </div>
+
+        {/* The standard inputs for the node */}
+        <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Spreadsheet ID</label>
+            <input
+                type="text"
+                placeholder="e.g., 1BxiMVs0XRY..."
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                value={selectedNode.data.spreadsheetId || ''}
+                onChange={(e) => updateNodeData('spreadsheetId', e.target.value)}
+            />
+            <p className="text-[10px] text-slate-500 mt-1">The long string of random characters in your Google Sheet URL.</p>
+        </div>
+        
+        <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Sheet Name</label>
+            <input
+                type="text"
+                placeholder="e.g., Sheet1"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-sm text-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                value={selectedNode.data.sheetName || 'Sheet1'}
+                onChange={(e) => updateNodeData('sheetName', e.target.value)}
+            />
+        </div>
+
+        <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Data to Append</label>
+            <textarea
+                rows={2}
+                placeholder="{{current_data}}"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-sm text-white focus:ring-2 focus:ring-indigo-500 outline-none resize-none"
+                value={selectedNode.data.dataPayload || '{{current_data}}'}
+                onChange={(e) => updateNodeData('dataPayload', e.target.value)}
+            />
+        </div>
+    </div>
+)}
+
 
                             <div className="pt-4 border-t border-slate-800"><button onClick={handleDeleteNode} className="w-full flex items-center justify-center gap-2 py-2.5 bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-white rounded-lg transition-colors font-bold text-sm"><Trash2 className="w-4 h-4" /> Delete</button></div>
                         </div>

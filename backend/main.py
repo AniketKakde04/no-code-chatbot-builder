@@ -2,6 +2,9 @@ import os
 import pathlib
 from dotenv import load_dotenv
 
+from fastapi.responses import RedirectResponse
+from google_auth_oauthlib.flow import Flow
+
 # --- CRITICAL FIX: LOAD ENV FIRST ---
 env_path = pathlib.Path(__file__).parent / '.env'
 load_dotenv(dotenv_path=env_path)
@@ -34,6 +37,15 @@ app.add_middleware(
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+
+
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",     # To read/write Sheets
+    "https://www.googleapis.com/auth/documents",        # To read/write Docs
+    "https://www.googleapis.com/auth/presentations",    # To read/write Slides
+    "https://www.googleapis.com/auth/drive.file"        # To create brand new files
+]
+
 
 try:
     if SUPABASE_URL and SUPABASE_KEY:
@@ -387,15 +399,16 @@ async def chat(request: ChatRequest):
     # 2. CHOOSE THE BRAIN
     if workflow_id:
         print(f"Bot {request.bot_id} routing to Workflow {workflow_id}")
-        # Fetch the nodes and edges from the workflow
-        wf_response = client.table("workflows").select("nodes, edges").eq("id", workflow_id).single().execute()
+        # Fetch the nodes, edges, and bot owner (user_id) from the workflow
+        wf_response = client.table("workflows").select("nodes, edges, user_id").eq("id", workflow_id).single().execute()
         if wf_response.data:
             nodes = wf_response.data['nodes']
             edges = wf_response.data['edges']
+            workflow_user_id = wf_response.data.get('user_id')
             
             # Execute the LangGraph Agent Workflow
             try:
-                result = await build_and_run_workflow(nodes, edges, request.question)
+                result = await build_and_run_workflow(nodes, edges, request.question, user_id=workflow_user_id)
                 answer = result.get('result', "I encountered an error running the assigned workflow.")
             except Exception as e:
                 answer = f"Agent Execution Error: {str(e)}"
@@ -429,7 +442,7 @@ async def connect_telegram(bot_id:str, token: str = Form(...), user: dict = Depe
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update database:{str(e)}")
     
-    BASE_URL = "https://816e5d5c5fe4.ngrok-free.app"
+    BASE_URL = "https://3792-106-221-212-15.ngrok-free.app"
     webhook_url = f"{BASE_URL}/telegram-webhook/{bot_id}"
 
     telegram_api =f"https://api.telegram.org/bot{token}/setWebhook?url={webhook_url}"
@@ -685,10 +698,10 @@ async def public_chat(share_id: str, request: ChatRequest):
     
     answer = ""
     if workflow_id:
-        wf_response = client.table("workflows").select("nodes, edges").eq("id", workflow_id).single().execute()
+        wf_response = client.table("workflows").select("nodes, edges, user_id").eq("id", workflow_id).single().execute()
         if wf_response.data:
             try:
-                result = await build_and_run_workflow(wf_response.data['nodes'], wf_response.data['edges'], request.question)
+                result = await build_and_run_workflow(wf_response.data['nodes'], wf_response.data['edges'], request.question, user_id=wf_response.data.get('user_id'))
                 answer = result.get('result', "Error running workflow.")
             except Exception as e:
                 answer = f"Agent Error: {str(e)}"
@@ -710,15 +723,20 @@ async def public_chat(share_id: str, request: ChatRequest):
 
 
 @app.post("/execute-workflow")
-async def execute_workflow(request: WorkflowRequest):
+async def execute_workflow(request: WorkflowRequest, user: dict = Depends(verify_user)):
     try:
-        result = await build_and_run_workflow(request.nodes, request.edges, request.initial_input)
+        print(f">>> execute_workflow: starting for user {user.user.id}")
+        result = await build_and_run_workflow(request.nodes, request.edges, request.initial_input, user_id=user.user.id)
+        print(f">>> execute_workflow: completed successfully")
         return {
             "status": "success", 
             "result": result.get('result', 'No result'), 
             "full_history": result.get('full_history', [])
         }
     except Exception as e:
+        print(f">>> execute_workflow: ERROR - {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- 7. LIVEKIT TOKEN ENDPOINT ---
@@ -793,6 +811,69 @@ async def bot_chat_proxy(bot_id: str, request: Request):
         print(f"Proxy Error: {e}")
         return {
             "choices": [{"message": {"content": f"Error: {str(e)}"}}]}
+
+# --- GOOGLE OAUTH ENDPOINTS ---
+
+@app.get("/auth/google/login")
+async def google_login(user_id: str,return_to: str = "http://localhost:3000/dashboard"):
+    """Step 1: Send the user to Google's login page."""
+    # Read the secret file you downloaded from Google Cloud
+    flow = Flow.from_client_secrets_file(
+        'client_secret.json', 
+        scopes=GOOGLE_SCOPES,
+        redirect_uri='http://localhost:8000/auth/google/callback'
+    )
+    state_data = json.dumps({"user_id": user_id, "return_to": return_to})
+    
+    # Generate the Google login URL. 
+    # access_type='offline' is CRITICAL because it gives us the refresh_token!
+    # We hide the 'user_id' inside the 'state' variable so Google hands it back to us later.
+    auth_url, _ = flow.authorization_url(
+        access_type='offline', 
+        prompt='consent',      
+        state=state_data # Google will hand this whole JSON back to us
+    )
+    
+    return RedirectResponse(auth_url)
+
+@app.get("/auth/google/callback")
+async def google_callback(state: str, code: str):
+    """Step 2: Catch the user when Google sends them back with the secret 'code'."""
+    # The 'state' variable contains the user_id we sent in Step 1
+    state_data = json.loads(state)
+    user_id = state_data.get("user_id")
+    return_to = state_data.get("return_to", "http://localhost:3000/dashboard")
+
+    flow = Flow.from_client_secrets_file(
+        'client_secret.json',
+        scopes=GOOGLE_SCOPES,
+        redirect_uri='http://localhost:8000/auth/google/callback'
+    )
+    
+    # Trade the secret 'code' for the actual access tokens
+    flow.fetch_token(code=code)
+    credentials = flow.credentials
+
+    # Save the tokens to your Supabase database!
+    # We use the global 'supabase_admin' or 'supabase' client here
+    client = supabase_admin if supabase_admin else supabase
+    
+    try:
+        client.table("user_integrations").upsert({
+            "user_id": user_id,
+            "provider": "google", 
+            "access_token": credentials.token,
+            "refresh_token": credentials.refresh_token,
+            "updated_at": "now()"
+        }).execute()
+        print(f"✅ Successfully saved Google tokens for user: {user_id}")
+    except Exception as e:
+        print(f"❌ Failed to save tokens to Supabase: {e}")
+
+    separator = "&" if "?" in return_to else "?"
+    # Send the user back to your React frontend Dashboard
+    return RedirectResponse("http://localhost:3000/dashboard?integration=success")
+
 
 if __name__ == "__main__":
     import uvicorn
