@@ -34,6 +34,14 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import logger, stdio_client
 from langchain_mcp_adapters.tools import load_mcp_tools
 
+
+import pandas as pd
+import ast
+import json
+import io
+import csv
+
+
 # --- 1. DEFINE STATE ---
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
@@ -395,6 +403,100 @@ def get_doc_writer_node(filename: str):
 
     return doc_writer_node_func
 
+def get_excel_writer_node(filename: str):
+    """
+    Writes structured tabular content from the agent to a .xlsx file.
+    Attempts to parse JSON, CSV, or Markdown tables.
+    """
+    def excel_writer_node_func(state: AgentState):
+        from datetime import datetime
+        print(">>> EXCEL WRITER NODE: entered")
+        
+        base_name = filename if filename and filename.strip() else "spreadsheet"
+        # Strip extension if accidentally provided by user in the base name
+        if base_name.endswith(".xlsx"):
+            base_name = base_name[:-5]
+            
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        final_filename = f"{base_name}_{timestamp}.xlsx"
+            
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, "generated_docs")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        file_path = os.path.join(output_dir, final_filename)
+        print(f">>> EXCEL WRITER NODE: writing to {file_path}")
+        
+        last_message = state["messages"][-1]
+        content = str(last_message.content).strip()
+        
+        df = None
+        
+        try:
+            # 1. Try to parse as JSON string (List of Dictionaries)
+            # Remove markdown JSON wrappers if present
+            clean_content = content
+            if clean_content.startswith("```json"):
+                clean_content = clean_content[7:-3].strip()
+            if clean_content.startswith("```"):
+                clean_content = clean_content[3:-3].strip()
+                
+            try:
+                data = json.loads(clean_content)
+                if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                    df = pd.DataFrame(data)
+            except json.JSONDecodeError:
+                pass
+
+            if df is None:
+                # A better heuristic for CSV or Markdown tables
+                lines = [line.strip() for line in content.split('\n') if line.strip()]
+                
+                # Check if it looks like a markdown table (uses pipes)
+                if any('|' in line for line in lines):
+                    # Clean the pipes and parse
+                    clean_lines = []
+                    for line in lines:
+                        if not re.match(r'^[\s\|\-\:]+$', line): # Skip separator lines
+                            # Strip leading/trailing pipes and split
+                            clean_line = line.strip('|').replace(' | ', '|').replace(' |', '|').replace('| ', '|')
+                            clean_lines.append(clean_line)
+                    
+                    if clean_lines:
+                        csv_data = '\n'.join(clean_lines)
+                        df = pd.read_csv(io.StringIO(csv_data), sep='|')
+                else:
+                    # Treat as standard CSV
+                    df = pd.read_csv(io.StringIO(content))
+
+            if df is not None and not df.empty:
+                import uuid
+                import shutil
+                tmp_path = os.path.join(output_dir, f"temp_{uuid.uuid4().hex}.xlsx")
+                
+                df.to_excel(tmp_path, index=False, engine='openpyxl')
+                
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                shutil.move(tmp_path, file_path)
+                
+                abs_path = os.path.abspath(file_path)
+                print(f">>> EXCEL WRITER NODE: success → {abs_path}")
+                return {
+                    "messages": [AIMessage(content=f"✅ Excel Spreadsheet created: {abs_path}")],
+                    "attachment_path": abs_path
+                }
+            else:
+                 return {"messages": [AIMessage(content="❌ Failed to generate Excel File: Could not parse output into a table format. Please instruct the agent to output raw CSV or JSON array.")]}
+                 
+        except Exception as e:
+            print(f">>> EXCEL WRITER NODE: FAILED → {e}")
+            return {"messages": [AIMessage(content=f"❌ Failed to write spreadsheet: {str(e)}")]}
+
+    return excel_writer_node_func
+
+
+
 def get_google_sheets_node(spreadsheet_id: str, sheet_name: str):
     """Appends content from the agent to a Google Sheet."""
     def google_sheets_node_func(state: AgentState):
@@ -524,6 +626,11 @@ async def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Di
             sheet_name = data.get('sheetName', 'Sheet1')
             print(f">>> Creating Google Sheets node: spreadsheet_id={spreadsheet_id}, sheet_name={sheet_name}")
             workflow.add_node(node_id, get_google_sheets_node(spreadsheet_id, sheet_name))
+        
+        elif backend_type == 'excel_writer':
+            filename = data.get('filename', 'data.xlsx')
+            workflow.add_node(node_id, get_excel_writer_node(filename))
+
         
         else:
             # Fallback for unknown types - add a passthrough node

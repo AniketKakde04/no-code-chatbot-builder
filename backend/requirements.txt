@@ -33,3 +33,5 @@ google-auth
 google-api-python-client 
 gspread
 
+pandas
+openpyxl
