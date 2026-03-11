@@ -15,6 +15,9 @@ from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 from docx import Document as DocxDocument # NEW IMPORT
 
+from pptx import Presentation
+from googleapiclient.discovery import build
+
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 import gspread
@@ -566,6 +569,284 @@ def get_google_sheets_node(spreadsheet_id: str, sheet_name: str):
     
     return google_sheets_node_func
 
+def get_ppt_writer_node(filename: str):
+    """Writes content to a PowerPoint presentation file."""
+    def ppt_writer_node_func(state: AgentState):
+        print(">>> PPT WRITER NODE: entered")
+        final_filename = filename if filename and filename.strip() else "presentation.pptx"
+        if not final_filename.endswith(".pptx"):
+            final_filename += ".pptx"
+            
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, "generated_docs")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        file_path = os.path.join(output_dir, final_filename)
+        print(f">>> PPT WRITER NODE: writing to {file_path}")
+        
+        last_message = state["messages"][-1]
+        content = str(last_message.content)
+        
+        try:
+            prs = Presentation()
+            slide_layout = prs.slide_layouts[1]  # Title and Content layout
+            slide = prs.slides.add_slide(slide_layout)
+            
+            title = slide.shapes.title
+            body = slide.placeholders[1]
+            
+            title.text = "AI Generated Report"
+            body.text = content
+            
+            import tempfile
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".pptx", dir=output_dir)
+            os.close(tmp_fd)
+            prs.save(tmp_path)
+            
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            shutil.move(tmp_path, file_path)
+            
+            abs_path = os.path.abspath(file_path)
+            print(f">>> PPT WRITER NODE: success → {abs_path}")
+            return {
+                "messages": [AIMessage(content=f"✅ PowerPoint presentation created: {abs_path}")],
+                "attachment_path": abs_path
+            }
+        except Exception as e:
+            print(f">>> PPT WRITER NODE: FAILED → {e}")
+            return {"messages": [AIMessage(content=f"❌ Failed to create PowerPoint: {str(e)}")]}
+    
+    return ppt_writer_node_func
+
+def get_google_slides_node(presentation_title: str):
+    """Creates a new Google Slides presentation with formatted slides containing title and body content."""
+    def google_slides_node_func(state: AgentState):
+        print(">>> GOOGLE SLIDES NODE: entered")
+        
+        try:
+            user_id = state.get("metadata", {}).get("user_id")
+            if not user_id:
+                return {"messages": [AIMessage(content="❌ Error: user_id not found in state")]}
+            
+            # Import supabase from main
+            from main import supabase, supabase_admin
+            client = supabase_admin if supabase_admin else supabase
+            
+            if not client:
+                return {"messages": [AIMessage(content="❌ Error: Supabase not initialized")]}
+            
+            # Fetch Google credentials
+            res = client.table("user_integrations").select("*").eq("user_id", user_id).eq("provider", "google").execute()
+            if not res.data:
+                return {"messages": [AIMessage(content="❌ Error: Google account not connected. Please sign in with Google.")]}
+            
+            token_info = res.data[0]
+            
+            creds = Credentials(
+                token=token_info["access_token"],
+                refresh_token=token_info["refresh_token"],
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=os.getenv("GOOGLE_CLIENT_ID"),
+                client_secret=os.getenv("GOOGLE_CLIENT_SECRET")
+            )
+            
+            # Refresh credentials if expired
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                client.table("user_integrations").update({"access_token": creds.token}).eq("id", token_info["id"]).execute()
+            
+            # Connect to Slides API
+            slides_service = build('slides', 'v1', credentials=creds)
+            
+            # Create a new presentation
+            final_title = presentation_title if presentation_title and presentation_title.strip() else "AI Generated Presentation"
+            body = {'title': final_title}
+            
+            presentation = slides_service.presentations().create(body=body).execute()
+            presentation_id = presentation.get('presentationId')
+            
+            # Get content from the agent
+            last_message = state["messages"][-1]
+            raw_content = str(last_message.content).strip()
+            
+            # Parse content into slide data
+            slides_data = []
+            
+            # Try to parse as JSON first
+            clean_content = raw_content
+            if clean_content.startswith("```json"):
+                clean_content = clean_content[7:-3].strip()
+            elif clean_content.startswith("```"):
+                clean_content = clean_content[3:-3].strip()
+            
+            try:
+                parsed = json.loads(clean_content)
+                if isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], dict):
+                    slides_data = parsed
+                else:
+                    slides_data = [{"title": "Generated Content", "content": raw_content}]
+            except:
+                # Split content by headers to create multiple slides
+                lines = raw_content.split('\n')
+                current_slide = {"title": "Slide 1", "content": ""}
+                slide_count = 1
+                
+                for line in lines:
+                    if line.startswith('#'):
+                        # New slide
+                        if current_slide["content"].strip():
+                            slides_data.append(current_slide)
+                        slide_count += 1
+                        current_slide = {"title": line.lstrip('#').strip(), "content": ""}
+                    else:
+                        current_slide["content"] += line + "\n"
+                
+                if current_slide["content"].strip():
+                    slides_data.append(current_slide)
+            
+            # If no slides parsed, treat entire content as one slide
+            if not slides_data:
+                slides_data = [{"title": "Generated Content", "content": raw_content}]
+            
+            # Build batch requests for all slides
+            requests = []
+            
+            for i, slide_info in enumerate(slides_data):
+                slide_id = f"slide_{i}"
+                title_box_id = f"title_box_{i}"
+                body_box_id = f"body_box_{i}"
+                
+                slide_title = slide_info.get("title", f"Slide {i+1}")
+                slide_body = slide_info.get("content", "")
+                
+                # 1. Create a blank slide
+                requests.append({
+                    'createSlide': {
+                        'objectId': slide_id,
+                        'slideLayout': {
+                            'predefinedLayout': 'BLANK'
+                        }
+                    }
+                })
+                
+                # 2. Create title text box
+                requests.append({
+                    'createShape': {
+                        'objectId': title_box_id,
+                        'shapeType': 'TEXT_BOX',
+                        'elementProperties': {
+                            'pageObjectId': slide_id,
+                            'size': {
+                                'height': {'magnitude': 60, 'unit': 'PT'},
+                                'width': {'magnitude': 650, 'unit': 'PT'}
+                            },
+                            'transform': {
+                                'scaleX': 1,
+                                'scaleY': 1,
+                                'translateX': 35,
+                                'translateY': 30,
+                                'unit': 'PT'
+                            }
+                        }
+                    }
+                })
+                
+                # 3. Insert title text
+                requests.append({
+                    'insertText': {
+                        'objectId': title_box_id,
+                        'insertionIndex': 0,
+                        'text': slide_title
+                    }
+                })
+                
+                # 4. Format title as bold
+                requests.append({
+                    'updateTextStyle': {
+                        'objectId': title_box_id,
+                        'textRange': {
+                            'type': 'ALL'
+                        },
+                        'style': {
+                            'bold': True,
+                            'fontSize': {
+                                'magnitude': 44,
+                                'unit': 'PT'
+                            }
+                        },
+                        'fields': 'bold,fontSize'
+                    }
+                })
+                
+                # 5. Create body text box
+                requests.append({
+                    'createShape': {
+                        'objectId': body_box_id,
+                        'shapeType': 'TEXT_BOX',
+                        'elementProperties': {
+                            'pageObjectId': slide_id,
+                            'size': {
+                                'height': {'magnitude': 350, 'unit': 'PT'},
+                                'width': {'magnitude': 650, 'unit': 'PT'}
+                            },
+                            'transform': {
+                                'scaleX': 1,
+                                'scaleY': 1,
+                                'translateX': 35,
+                                'translateY': 100,
+                                'unit': 'PT'
+                            }
+                        }
+                    }
+                })
+                
+                # 6. Insert body text
+                requests.append({
+                    'insertText': {
+                        'objectId': body_box_id,
+                        'insertionIndex': 0,
+                        'text': slide_body
+                    }
+                })
+                
+                # 7. Format body text with proper font size
+                requests.append({
+                    'updateTextStyle': {
+                        'objectId': body_box_id,
+                        'textRange': {
+                            'type': 'ALL'
+                        },
+                        'style': {
+                            'fontSize': {
+                                'magnitude': 18,
+                                'unit': 'PT'
+                            }
+                        },
+                        'fields': 'fontSize'
+                    }
+                })
+            
+            # Send all batch requests to Google Slides API
+            if requests:
+                slides_service.presentations().batchUpdate(
+                    presentationId=presentation_id,
+                    body={'requests': requests}
+                ).execute()
+            
+            slides_url = f"https://docs.google.com/presentation/d/{presentation_id}"
+            msg = f"✅ Google Slides presentation created with {len(slides_data)} slides! Link: {slides_url}"
+            print(f">>> GOOGLE SLIDES NODE: success → {msg}")
+            return {"messages": [AIMessage(content=msg)]}
+            
+        except Exception as e:
+            print(f">>> GOOGLE SLIDES NODE: FAILED → {e}")
+            import traceback
+            traceback.print_exc()
+            return {"messages": [AIMessage(content=f"❌ Google Slides Error: {str(e)}")]}
+    
+    return google_slides_node_func
+
 # --- 5. GRAPH BUILDER ---
 
 async def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Dict], request_initial_input: str, user_id: str = None):
@@ -630,7 +911,14 @@ async def build_and_run_workflow(nodes_config: List[Dict], edges_config: List[Di
         elif backend_type == 'excel_writer':
             filename = data.get('filename', 'data.xlsx')
             workflow.add_node(node_id, get_excel_writer_node(filename))
-
+            
+        elif backend_type == 'ppt_writer':
+            filename = data.get('filename', 'presentation.pptx')
+            workflow.add_node(node_id, get_ppt_writer_node(filename))
+            
+        elif backend_type == 'google_slides':
+            presentation_title = data.get('presentationTitle', 'AI Generated Presentation')
+            workflow.add_node(node_id, get_google_slides_node(presentation_title))
         
         else:
             # Fallback for unknown types - add a passthrough node
